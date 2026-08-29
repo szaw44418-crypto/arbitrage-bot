@@ -1,28 +1,21 @@
 import os
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Bot is alive!")
+app = Flask(__name__)
 
-    def do_HEAD(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
+@app.route('/', methods=['GET', 'HEAD'])
+def health_check():
+    return "Bot is alive!", 200
 
-def start_health_check_server():
+def run_web_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
+    app.run(host='0.0.0.0', port=port)
 
-threading.Thread(target=start_health_check_server, daemon=True).start()
+threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==========================================
-# အောက်တွင် သင့် မူလ Trading Bot ကုဒ်များ ဆက်လက် ရှိပါမည်
+# အောက်တွင် သင့် မူလ Trading Bot ကုဒ်များကို ဆက်လက် ထားရှိပါ
 # ==========================================
 
 import hmac
