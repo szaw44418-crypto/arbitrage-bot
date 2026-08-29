@@ -1,3 +1,26 @@
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# Render Port စစ်ဆေးမှုကို အောင်မြင်စေရန် အသေးစား Web Server ဖန်တီးခြင်း
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def start_health_check_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+# Web Server ကို နောက်ကွယ် (Background) တွင် Run ထားခြင်း
+threading.Thread(target=start_health_check_server, daemon=True).start()
+
+# ==========================================
+# အောက်တွင် သင့် မူလ Trading Bot ကုဒ်များကို ဆက်လက် ထားရှိပါ
+# ==========================================
+
 import hmac
 import hashlib
 import time
