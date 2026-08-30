@@ -1,4 +1,5 @@
 import os
+import math
 import threading
 from flask import Flask
 
@@ -37,6 +38,10 @@ FUTURES_API_KEY = "L3hBSJiK4FhThiwlWbqcmNSs4s4JfmyKzOY0PRUukWCt4edRJMKr6odpoVGr0
 FUTURES_SECRET_KEY = "YZjGKhY7mFE6axwqEg00eXPMuLdEZscci1vjrfj5E4gBDMnSxzjxyMRisuCu3X3o"
 
 TRADE_AMOUNT_USDT = "60"
+
+def truncate_qty(qty, precision):
+    factor = 10 ** precision
+    return math.floor(float(qty) * factor) / factor
 
 def get_server_time():
     try:
@@ -148,7 +153,7 @@ def execute_arbitrage():
 
     f_precision = get_futures_qty_precision(symbol)
     raw_qty = spot_qty if spot_qty > 0 else (float(TRADE_AMOUNT_USDT) / price)
-    futures_qty = round(raw_qty, f_precision)
+    futures_qty = truncate_qty(raw_qty, f_precision)
 
     futures_res = send_signed_request(FUTURES_BASE, "/fapi/v1/order", FUTURES_API_KEY, FUTURES_SECRET_KEY, "POST", {
         'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': futures_qty
@@ -163,7 +168,7 @@ def execute_arbitrage():
         print("⚠️ Emergency! Selling purchased Spot assets immediately...")
         s_precision = get_spot_qty_precision(symbol)
         send_signed_request(SPOT_BASE, "/api/v3/order", SPOT_API_KEY, SPOT_SECRET_KEY, "POST", {
-            'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': round(spot_qty, s_precision)
+            'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': truncate_qty(spot_qty, s_precision)
         })
         return False
 
@@ -183,7 +188,7 @@ def close_positions(symbol, futures_qty, spot_qty):
         spot_qty = float(TRADE_AMOUNT_USDT) / price
 
     s_precision = get_spot_qty_precision(symbol)
-    clean_spot_qty = round(spot_qty, s_precision)
+    clean_spot_qty = truncate_qty(spot_qty, s_precision)
     s_close = send_signed_request(SPOT_BASE, "/api/v3/order", SPOT_API_KEY, SPOT_SECRET_KEY, "POST", {
         'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': clean_spot_qty
     })
