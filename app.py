@@ -46,32 +46,43 @@ def scan_entire_market():
     print("\n🔍 [SCANNING ENTIRE BINANCE FUTURES MARKET...]")
     try:
         url = "https://fapi.binance.com/fapi/v1/premiumIndex"
-        all_market_data = requests.get(url, timeout=10).json()
-        
-        sorted_market = sorted(all_market_data, key=lambda x: float(x.get('lastFundingRate', 0)), reverse=True)
+        res = requests.get(url, timeout=10)
+        all_market_data = res.json()
+
+        if not isinstance(all_market_data, list):
+            print(f"⚠️ Binance API Response Invalid: {all_market_data}")
+            return "BTCUSDT", 0.0100, int(time.time() * 1000) + 3600000
+
+        valid_market_data = [item for item in all_market_data if isinstance(item, dict)]
+
+        sorted_market = sorted(valid_market_data, key=lambda x: float(x.get('lastFundingRate', 0)), reverse=True)
+        if not sorted_market:
+            return "BTCUSDT", 0.0100, int(time.time() * 1000) + 3600000
+
         absolute_best = sorted_market[0]
-        abs_symbol = absolute_best['symbol']
-        abs_rate = float(absolute_best['lastFundingRate']) * 100
-        next_funding_time = int(absolute_best['nextFundingTime'])
-        
+        abs_symbol = absolute_best.get('symbol', 'BTCUSDT')
+        abs_rate = float(absolute_best.get('lastFundingRate', 0)) * 100
+        next_funding_time = int(absolute_best.get('nextFundingTime', time.time() * 1000 + 3600000))
+
         print(f"🌟 [TOP COIN]: {abs_symbol} | Rate: {abs_rate:.4f}%")
-        
+
         testnet_supported = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
-        
+
         if abs_symbol in testnet_supported:
             return abs_symbol, abs_rate, next_funding_time
         else:
             for item in sorted_market:
-                if item['symbol'] in testnet_supported:
-                    t_rate = float(item['lastFundingRate']) * 100
-                    t_funding_time = int(item['nextFundingTime'])
+                if item.get('symbol') in testnet_supported:
+                    t_rate = float(item.get('lastFundingRate', 0)) * 100
+                    t_funding_time = int(item.get('nextFundingTime', time.time() * 1000 + 3600000))
                     print(f"💡 [TESTNET TARGET]: {item['symbol']} (Rate: {t_rate:.4f}%)")
                     return item['symbol'], t_rate, t_funding_time
 
     except Exception as e:
         print(f"⚠️ Market Scanner Warning: {e}")
-        
+
     return "BTCUSDT", 0.0100, int(time.time() * 1000) + 3600000
+
 
 def get_futures_qty_precision(symbol):
     try:
