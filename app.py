@@ -33,7 +33,7 @@ FUTURES_API_KEY = os.environ.get("FUTURES_API_KEY", "L3hBSJiK4FhThiwlWbqcmNSs4s4
 FUTURES_SECRET_KEY = os.environ.get("FUTURES_SECRET_KEY", "YZjGKhY7mFE6axwqEg00eXPMuLdEZscci1vjrfj5E4gBDMnSxzjxyMRisuCu3X3o")
 
 TRADE_AMOUNT_USDT = "60"
-MIN_PROFITABLE_FUNDING_RATE = 0.35  
+MIN_PROFITABLE_FUNDING_RATE = 0.01  # Testnet အတွက် 0.01 သို့ လျှော့ချထားသည်
 
 # Fixed: String-based precise truncation to avoid float rounding issues
 def truncate_qty(qty, precision):
@@ -84,7 +84,6 @@ def scan_entire_market():
         url = "https://fapi.binance.com/fapi/v1/premiumIndex"
         res = requests.get(url, timeout=10)
         
-        # IP Rate Limit သို့မဟုတ် Ban ခံရပါက စစ်ဆေးရန်
         if res.status_code != 200:
             print(f"⚠️ Binance API Warning/Ban Status: {res.status_code} - {res.text}")
             return "BTCUSDT", 0.0100, int(time.time() * 1000) + 3600000
