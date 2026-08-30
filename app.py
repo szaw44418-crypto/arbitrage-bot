@@ -99,6 +99,16 @@ def get_futures_qty_precision(symbol):
         pass
     return 3
 
+def get_spot_qty_precision(symbol):
+    precisions = {
+        "BTCUSDT": 5,
+        "ETHUSDT": 4,
+        "BNBUSDT": 3,
+        "SOLUSDT": 2,
+        "XRPUSDT": 1
+    }
+    return precisions.get(symbol, 2)
+
 def send_signed_request(base_url, endpoint, api_key, secret_key, method="POST", params=None):
     if params is None:
         params = {}
@@ -113,6 +123,10 @@ def send_signed_request(base_url, endpoint, api_key, secret_key, method="POST", 
 
 def execute_arbitrage():
     symbol, funding_rate, next_funding_time = scan_entire_market()
+
+    if funding_rate <= 0:
+        print(f"⚠️ Funding Rate is negative/too low ({funding_rate:.4f}%). Skipping trade.")
+        return False
 
     # 1. Spot Buy
     print(f"\n⏳ Executing Spot Buy (${TRADE_AMOUNT_USDT} USDT) on {symbol}...")
@@ -132,9 +146,9 @@ def execute_arbitrage():
     ticker = requests.get(f"{SPOT_BASE}/api/v3/ticker/price?symbol={symbol}", timeout=10).json()
     price = float(ticker['price'])
 
-    precision = get_futures_qty_precision(symbol)
+    f_precision = get_futures_qty_precision(symbol)
     raw_qty = spot_qty if spot_qty > 0 else (float(TRADE_AMOUNT_USDT) / price)
-    futures_qty = round(raw_qty, precision)
+    futures_qty = round(raw_qty, f_precision)
 
     futures_res = send_signed_request(FUTURES_BASE, "/fapi/v1/order", FUTURES_API_KEY, FUTURES_SECRET_KEY, "POST", {
         'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': futures_qty
@@ -147,8 +161,9 @@ def execute_arbitrage():
     else:
         print(f"❌ [FUTURES ERROR]: {futures_res}")
         print("⚠️ Emergency! Selling purchased Spot assets immediately...")
+        s_precision = get_spot_qty_precision(symbol)
         send_signed_request(SPOT_BASE, "/api/v3/order", SPOT_API_KEY, SPOT_SECRET_KEY, "POST", {
-            'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': round(spot_qty, 5)
+            'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': round(spot_qty, s_precision)
         })
         return False
 
@@ -167,7 +182,8 @@ def close_positions(symbol, futures_qty, spot_qty):
         price = float(ticker['price'])
         spot_qty = float(TRADE_AMOUNT_USDT) / price
 
-    clean_spot_qty = round(spot_qty, 5)
+    s_precision = get_spot_qty_precision(symbol)
+    clean_spot_qty = round(spot_qty, s_precision)
     s_close = send_signed_request(SPOT_BASE, "/api/v3/order", SPOT_API_KEY, SPOT_SECRET_KEY, "POST", {
         'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': clean_spot_qty
     })
