@@ -15,7 +15,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==========================================
-# အောက်တွင် သင့် မူလ Trading Bot ကုဒ်များကို ဆက်လက် ထားရှိပါ
+# TRADING BOT CODE
 # ==========================================
 
 import hmac
@@ -39,8 +39,14 @@ FUTURES_SECRET_KEY = "YZjGKhY7mFE6axwqEg00eXPMuLdEZscci1vjrfj5E4gBDMnSxzjxyMRisu
 TRADE_AMOUNT_USDT = "60"
 
 def get_server_time():
-    res = requests.get(f"{FUTURES_BASE}/fapi/v1/time", timeout=10)
-    return res.json()["serverTime"]
+    try:
+        res = requests.get(f"{FUTURES_BASE}/fapi/v1/time", timeout=10)
+        data = res.json()
+        if isinstance(data, dict) and "serverTime" in data:
+            return data["serverTime"]
+    except Exception:
+        pass
+    return int(time.time() * 1000)
 
 def scan_entire_market():
     print("\n🔍 [SCANNING ENTIRE BINANCE FUTURES MARKET...]")
@@ -83,7 +89,6 @@ def scan_entire_market():
 
     return "BTCUSDT", 0.0100, int(time.time() * 1000) + 3600000
 
-
 def get_futures_qty_precision(symbol):
     try:
         res = requests.get(f"{FUTURES_BASE}/fapi/v1/exchangeInfo", timeout=10).json()
@@ -120,14 +125,19 @@ def execute_arbitrage():
         return False
     print(f"✅ [SPOT SUCCESS] Order ID: {spot_res['orderId']}")
 
+    # Spot မှ အမှန်တကယ် ဝယ်ယူရရှိခဲ့သည့် အရေအတွက်
+    spot_qty = float(spot_res.get('executedQty', 0))
+
     # 2. Futures Short
     print(f"⏳ Executing Futures Short (${TRADE_AMOUNT_USDT} USDT) on {symbol}...")
     ticker = requests.get(f"{SPOT_BASE}/api/v3/ticker/price?symbol={symbol}", timeout=10).json()
     price = float(ticker['price'])
     
     precision = get_futures_qty_precision(symbol)
-    raw_qty = float(TRADE_AMOUNT_USDT) / price
-    futures_qty = round(raw_qty + (10 ** (-precision)), precision)
+    
+    # spot_qty ရရှိပါက ထိုပမာဏအတိုင်း Short ရိုက်မည်၊ မရပါက Price ဖြင့် တွက်မည်
+    raw_qty = spot_qty if spot_qty > 0 else (float(TRADE_AMOUNT_USDT) / price)
+    futures_qty = round(raw_qty, precision)
     
     futures_res = send_signed_request(FUTURES_BASE, "/fapi/v1/order", FUTURES_API_KEY, FUTURES_SECRET_KEY, "POST", {
         'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': futures_qty
@@ -136,12 +146,12 @@ def execute_arbitrage():
     if 'orderId' in futures_res:
         print(f"✅ [FUTURES SUCCESS] Order ID: {futures_res['orderId']}")
         print(f"🎉 Position Opened for {symbol} | Rate: {funding_rate:.4f}%")
-        return symbol, futures_qty
+        return symbol, futures_qty, spot_qty
     else:
         print(f"❌ [FUTURES ERROR]: {futures_res}")
         return False
 
-def close_positions(symbol, futures_qty):
+def close_positions(symbol, futures_qty, spot_qty):
     print(f"\n🔒 [CLOSING POSITIONS] Unwinding trades for {symbol}...")
     
     # 1. Close Futures Short (BUY back)
@@ -150,11 +160,12 @@ def close_positions(symbol, futures_qty):
     })
     print(f"📦 Futures Closed: {f_close}")
     
-    # 2. Sell Spot Holdings
-    ticker = requests.get(f"{SPOT_BASE}/api/v3/ticker/price?symbol={symbol}", timeout=10).json()
-    price = float(ticker['price'])
-    spot_qty = round(float(TRADE_AMOUNT_USDT) / price, 3)
-    
+    # 2. Sell Spot Holdings (ဝယ်ထားခဲ့သော ပမာဏအတိုင်း အတိအကျ ပြန်ရောင်းမည်)
+    if spot_qty <= 0:
+        ticker = requests.get(f"{SPOT_BASE}/api/v3/ticker/price?symbol={symbol}", timeout=10).json()
+        price = float(ticker['price'])
+        spot_qty = round(float(TRADE_AMOUNT_USDT) / price, 3)
+
     s_close = send_signed_request(SPOT_BASE, "/api/v3/order", SPOT_API_KEY, SPOT_SECRET_KEY, "POST", {
         'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': spot_qty
     })
@@ -168,37 +179,28 @@ def start_smart_bot():
     
     while True:
         try:
-            # 1. ဈေးကွက်ကိုစကင်ဖတ်ပြီး နောက်လာမည့် Funding အချိန်ကို ယူခြင်း
             _, _, next_funding_time = scan_entire_market()
             server_time = get_server_time()
             
-            # မည်မျှလိုသေးကြောင်း တွက်ချက်ခြင်း (စက္ကန့်)
             countdown_seconds = (next_funding_time - server_time) / 1000.0
-            
             print(f"⏳ Time to next funding: {countdown_seconds / 60:.1f} minutes remaining.")
             
-            # 2. Funding မတိုင်မီ ၁၅ မိနစ် (၉၀၀ စက္ကန့်) အလိုသို့ ရောက်ရှိလာပါက
             if countdown_seconds <= 900:
                 print("🎯 Target entry window reached (15 mins left)! Executing trade...")
                 
-                # အခွင့်အကောင်းဆုံး Coin ဖြင့် Order ဝင်ခြင်း
                 trade_result = execute_arbitrage()
                 
                 if trade_result:
-                    symbol, futures_qty = trade_result
+                    symbol, futures_qty, spot_qty = trade_result
                     
-                    # 3. Funding ဖြတ်ပြီးသည်အထိ (ဥပမာ - ၂ မိနစ်ခန့်) စောင့်ပြီး Position ပိတ်ခြင်း (အမြတ်ယူထွက်ရန်)
                     print("⏳ Holding position through funding fee collection...")
                     time.sleep(120) 
                     
-                    # Position ပိတ်ခြင်း
-                    close_positions(symbol, futures_qty)
+                    close_positions(symbol, futures_qty, spot_qty)
                 
-                # လာမည့် ၄ နာရီပတ်အတွက် အလွန်အကျွံ မစစ်ဘဲ ခေတ္တရပ်နားရန်
                 print("💤 Sleeping for 3 hours before next cycle preparation...")
                 time.sleep(10800)
             else:
-                # အချိန်အများကြီး လိုသေးပါက မိနစ်အနည်းငယ်စီ ခြား၍ စစ်ဆေးရန် (Cloud မှာ CPU မစားစေရန်)
                 sleep_time = min(600, (countdown_seconds - 900))
                 time.sleep(max(sleep_time, 10))
                 
