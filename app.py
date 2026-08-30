@@ -33,7 +33,7 @@ FUTURES_API_KEY = os.environ.get("FUTURES_API_KEY", "L3hBSJiK4FhThiwlWbqcmNSs4s4
 FUTURES_SECRET_KEY = os.environ.get("FUTURES_SECRET_KEY", "YZjGKhY7mFE6axwqEg00eXPMuLdEZscci1vjrfj5E4gBDMnSxzjxyMRisuCu3X3o")
 
 TRADE_AMOUNT_USDT = "60"
-MIN_PROFITABLE_FUNDING_RATE = 0.01  # Testnet အတွက် 0.01 သို့ လျှော့ချထားသည်
+MIN_PROFITABLE_FUNDING_RATE = 0.35  
 
 # Fixed: String-based precise truncation to avoid float rounding issues
 def truncate_qty(qty, precision):
@@ -65,6 +65,9 @@ def send_signed_request(base_url, endpoint, api_key, secret_key, method="POST", 
 
     url = f"{base_url}{endpoint}?{query_string}&signature={signature}"
     headers = {'X-MBX-APIKEY': api_key}
+    
+    # Rate limit ထိန်းချုပ်ရန် တောင်းဆိုမှုကြားတွင် စက္ကန့်အနည်းငယ် ခေတ္တဆိုင်းမည်
+    time.sleep(0.2)
     return requests.post(url, headers=headers).json() if method == "POST" else requests.get(url, headers=headers).json()
 
 def get_spot_balance(symbol):
@@ -79,13 +82,20 @@ def get_spot_balance(symbol):
     return 0.0
 
 def scan_entire_market():
-    print("\n🔍 [SCANNING ENTIRE BINANCE FUTURES MARKET...]")
+    print("\n🔍 [SCANNING ENTIRE BINANCE FUTURES MARKET (Rate-Limit Protected)...]")
     try:
         url = "https://fapi.binance.com/fapi/v1/premiumIndex"
         res = requests.get(url, timeout=10)
         
+        # 🚨 Rate Limit (418) သို့မဟုတ် Too Many Requests (429) မိပါက အလိုအလျောက် ၁၅ မိနစ် ရပ်နားမည်
+        if res.status_code in [418, 429]:
+            print(f"🚨 [IP BANNED / RATE LIMITED] Status {res.status_code}: Too many requests. Sleeping for 15 minutes to clear ban...")
+            time.sleep(900)
+            return "BTCUSDT", 0.0100, int(time.time() * 1000) + 3600000
+
         if res.status_code != 200:
-            print(f"⚠️ Binance API Warning/Ban Status: {res.status_code} - {res.text}")
+            print(f"⚠️ Binance API Warning Status: {res.status_code} - {res.text}")
+            time.sleep(60)
             return "BTCUSDT", 0.0100, int(time.time() * 1000) + 3600000
 
         all_market_data = res.json()
@@ -120,6 +130,7 @@ def scan_entire_market():
 
     except Exception as e:
         print(f"⚠️ Market Scanner Warning: {e}")
+        time.sleep(30)
 
     return "BTCUSDT", 0.0100, int(time.time() * 1000) + 3600000
 
@@ -229,7 +240,7 @@ def close_positions(symbol, futures_qty, spot_qty):
 
 def start_smart_bot():
     print("="*60)
-    print("🤖 CLOUD-READY FUNDING FEE SNIPING & ARBITRAGE BOT")
+    print("🤖 RATE-LIMIT PROTECTED FUNDING FEE ARBITRAGE BOT")
     print("="*60)
 
     while True:
@@ -264,12 +275,14 @@ def start_smart_bot():
                     print("⚠️ Trade was skipped or failed. Retrying scan in 60 seconds...")
                     time.sleep(60)
             else:
-                sleep_time = min(600, (countdown_seconds - 900))
-                time.sleep(max(sleep_time, 10))
+                # 🛡️ Rate-Limit ကာကွယ်ရန် အဝေးကြီးလိုသေးပါက အနည်းဆုံး ၃ မိနစ် (180 စက္ကန့်) မှ ၁၀ မိနစ်ကြား အနားပေးမည်
+                sleep_time = min(600, max(180, (countdown_seconds - 900)))
+                print(f"💤 Far from entry window. Sleeping for {sleep_time / 60:.1f} minutes to conserve API rate limits...")
+                time.sleep(sleep_time)
 
         except Exception as e:
             print(f"⚠️ Main Loop Error: {e}")
-            time.sleep(30)
+            time.sleep(60)
 
 if __name__ == "__main__":
     start_smart_bot()
