@@ -83,6 +83,12 @@ def scan_entire_market():
     try:
         url = "https://fapi.binance.com/fapi/v1/premiumIndex"
         res = requests.get(url, timeout=10)
+        
+        # IP Rate Limit သို့မဟုတ် Ban ခံရပါက စစ်ဆေးရန်
+        if res.status_code != 200:
+            print(f"⚠️ Binance API Warning/Ban Status: {res.status_code} - {res.text}")
+            return "BTCUSDT", 0.0100, int(time.time() * 1000) + 3600000
+
         all_market_data = res.json()
 
         if not isinstance(all_market_data, list):
@@ -188,7 +194,7 @@ def execute_arbitrage(symbol, funding_rate, next_funding_time):
         print("⚠️ Emergency! Selling purchased Spot assets immediately...")
         s_precision = get_spot_qty_precision(symbol)
         avail_spot = get_spot_balance(symbol)
-        
+
         send_signed_request(SPOT_BASE, "/api/v3/order", SPOT_API_KEY, SPOT_SECRET_KEY, "POST", {
             'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': truncate_qty(avail_spot, s_precision)
         })
