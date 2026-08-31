@@ -33,7 +33,7 @@ FUTURES_API_KEY = os.environ.get("FUTURES_API_KEY", "L3hBSJiK4FhThiwlWbqcmNSs4s4
 FUTURES_SECRET_KEY = os.environ.get("FUTURES_SECRET_KEY", "YZjGKhY7mFE6axwqEg00eXPMuLdEZscci1vjrfj5E4gBDMnSxzjxyMRisuCu3X3o")
 
 TRADE_AMOUNT_USDT = "60"
-MIN_PROFITABLE_FUNDING_RATE = 0.35  
+MIN_PROFITABLE_FUNDING_RATE = 0.05  
 
 # Fixed: String-based precise truncation to avoid float rounding issues
 def truncate_qty(qty, precision):
