@@ -32,7 +32,7 @@ SPOT_SECRET_KEY = os.environ.get("SPOT_SECRET_KEY", "YfGOumNKz4MMbZ9MBy7aMB3R6CW
 FUTURES_API_KEY = os.environ.get("FUTURES_API_KEY", "TGSwnTW3ukJ7z8fXKeZd4Iz6MBttW6bRA2ODX5rwXC90YWsv5srgcwcL7Bl8XQeA")
 FUTURES_SECRET_KEY = os.environ.get("FUTURES_SECRET_KEY", "b64gEodONh8DMFPsX7Kaj1QRhGdgRM8iCYy8gVPVAO8VNAzWL88DmvZhrVE330Ed")
 
-TRADE_AMOUNT_USDT = 100.0
+TRADE_AMOUNT_USDT = 60.0
 LEVERAGE = 1  
 
 # 🛡️ Advanced Safety & Profit Thresholds
@@ -140,13 +140,12 @@ def check_funding_history(symbol):
         if res.status_code == 200:
             rates = res.json()
             if rates and len(rates) >= 3:
-                # ပြီးခဲ့သည့် ၃ ကြိမ်စလုံး အပေါင်းလက္ခဏာ (Positive) ဖြစ်မဖြစ် စစ်ဆေးခြင်း
                 past_rates = [float(r['fundingRate']) for r in rates]
                 if all(r > 0 for r in past_rates):
                     return True
     except Exception:
         pass
-    return False # မသေချာပါက ကျော်မည်
+    return False
 
 # 💧 [PIPELINE STEP: Dynamic Slippage & Order Book Depth Simulation]
 def simulate_slippage(symbol, volume_24h):
@@ -157,14 +156,13 @@ def simulate_slippage(symbol, volume_24h):
             best_bid = float(spot_depth['bids'][0][0])
             spread_pct = ((best_ask - best_bid) / best_ask) * 100
             
-            # Volume ပမာဏအပေါ်မူတည်၍ Slippage ကို တက်ကြွစွာ တွက်ချက်ခြင်း
             dynamic_slip = max(0.01, spread_pct / 2.0)
             if volume_24h < 20000000:
                 dynamic_slip += 0.02
             return dynamic_slip
     except Exception:
         pass
-    return 0.03 # Default fallback slip buffer
+    return 0.03
 
 # 🌟 [ADVANCED FULL-PIPELINE MARKET SCANNER & RISK SCORING]
 def advanced_market_scanner():
@@ -195,29 +193,23 @@ def advanced_market_scanner():
                 next_funding_time = int(p_info.get('nextFundingTime', time.time() * 1000 + 3600000))
                 volume_24h = float(t_info.get('quoteVolume', 0))
 
-                # 1. Volume Filter
                 if volume_24h < MIN_24H_VOLUME_USDT:
                     continue
 
-                # 2. Funding History Check (Trend Verification)
                 if not check_funding_history(symbol):
                     continue
 
-                # 3. Open Interest (OI) Check
                 oi_res = requests.get(f"{FUTURES_BASE}/fapi/v1/openInterest?symbol={symbol}", timeout=5)
                 open_interest = float(oi_res.json().get('openInterest', 0)) if oi_res.status_code == 200 else 0.0
 
-                # 4. Simulation & All Fees Calculation
-                estimated_total_fees = 0.16  # Spot & Futures Maker/Taker Fees
+                estimated_total_fees = 0.16  
                 estimated_slippage = simulate_slippage(symbol, volume_24h)
                 
                 expected_net_profit = funding_rate - (estimated_total_fees + estimated_slippage)
 
-                # 5. Net Profit Filter
                 if expected_net_profit < MIN_NET_PROFIT_THRESHOLD:
                     continue
 
-                # 6. Advanced Risk Score Calculation
                 vol_score = min(volume_24h / 200000000.0, 1.0) * 30
                 oi_score = min(open_interest / 2000000.0, 1.0) * 30
                 profit_score = min(expected_net_profit, 5.0) * 30
@@ -352,51 +344,71 @@ def close_positions(symbol, futures_qty, spot_qty):
 
     print("✨ Arbitrage Cycle Completed Successfully & P&L Realized!")
 
+def get_next_funding_countdown():
+    try:
+        res = requests.get(f"{FUTURES_BASE}/fapi/v1/premiumIndex", timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if data and isinstance(data, list):
+                next_times = [int(item['nextFundingTime']) for item in data if 'nextFundingTime' in item]
+                if next_times:
+                    return min(next_times)
+    except Exception:
+        pass
+    return int(time.time() * 1000) + 3600000
+
 def start_smart_bot():
     print("="*60)
-    print("🤖 FULL PIPELINE ARBITRAGE BOT STARTED")
+    print("🤖 FULL PIPELINE ARBITRAGE BOT STARTED (Optimized 2-Hour Schedule)")
     print("="*60)
 
     while True:
         try:
-            symbol, funding_rate, net_profit, next_funding_time = advanced_market_scanner()
+            server_time = get_futures_server_time()
+            next_funding_time = get_next_funding_countdown()
+            countdown_seconds = (next_funding_time - server_time) / 1000.0
+            
+            scan_threshold_seconds = 900 + 7200 
+
+            if countdown_seconds > scan_threshold_seconds:
+                sleep_duration = countdown_seconds - scan_threshold_seconds
+                print(f"💤 Funding အချိန်နှင့် အလှမ်းဝေးသေးပါသည် ({countdown_seconds / 60:.1f} မိနစ် လိုသေးသည်)။ ၂ နာရီအလိုသို့ ရောက်ရန် {sleep_duration / 60:.1f} မိနစ် အိပ်စက်ပါမည်...")
+                time.sleep(sleep_duration)
+                continue
+
+            print("🎯 သတ်မှတ်ထားသော ၂ နာရီအလို ဝင်းဒိုးသို့ ရောက်ရှိလာပြီဖြစ်ပါသဖြင့် စျေးကွက်ကို စတင်စကင်ဖတ်ပါပြီ...")
+            symbol, funding_rate, net_profit, target_funding_time = advanced_market_scanner()
             
             if not symbol:
-                print("⏳ No target found. Retrying scan in 60 seconds...")
+                print("⏳ ကိုက်ညီသော ကွိုင် မတွေ့ရှိသေးပါ။ ၆၀ စက္ကန့်အကြာတွင် ထပ်စမ်းမည်...")
                 time.sleep(60)
                 continue
 
-            server_time = get_futures_server_time()
-            countdown_seconds = (next_funding_time - server_time) / 1000.0
-            print(f"⏳ Time to next funding for {symbol}: {countdown_seconds / 60:.1f} minutes remaining.")
+            current_srv_time = get_futures_server_time()
+            remaining_to_entry = (target_funding_time - current_srv_time) / 1000.0
 
-            if countdown_seconds <= 900: # 15 မိနစ်အလို Entry Window
-                print("🎯 Target entry window reached! Executing pipeline trade...")
-
-                trade_result = execute_arbitrage(symbol, net_profit, next_funding_time)
+            if remaining_to_entry <= 900: 
+                print("🎯 Target entry window သို့ ရောက်ပါပြီ! အော်ဒါ စတင်လုပ်ဆောင်နေပါပြီ...")
+                trade_result = execute_arbitrage(symbol, net_profit, target_funding_time)
 
                 if trade_result:
-                    symbol, futures_qty, spot_qty, target_funding_time = trade_result
-
-                    current_srv_time = get_futures_server_time()
-                    wait_seconds = ((target_funding_time - current_srv_time) / 1000.0) + 30
+                    symbol, futures_qty, spot_qty, t_funding_time = trade_result
+                    wait_seconds = ((t_funding_time - get_futures_server_time()) / 1000.0) + 30
 
                     if wait_seconds > 0:
-                        print(f"⏳ Holding position through funding fee collection (Waiting {wait_seconds / 60:.1f} mins)...")
+                        print(f"⏳ Funding Fee ကောက်ခံမည့်အချိန်အထိ Position ကို ထိန်းသိမ်းထားပါမည် ({wait_seconds / 60:.1f} မိနစ် စောင့်မည်)...")
                         time.sleep(wait_seconds)
                     else:
                         time.sleep(30)
 
                     close_positions(symbol, futures_qty, spot_qty)
-                    print("💤 Sleeping for 3 hours before next cycle preparation...")
+                    print("💤 Cycle ပြီးဆုံးသွားပါပြီ။ နောက်တစ်ကြိမ်အတွက် ၃ နာရီ အိပ်စက်ပါမည်...")
                     time.sleep(10800)
                 else:
-                    print("⚠️ Trade skipped or failed. Retrying in 60 seconds...")
+                    print("⚠️ အော်ဒါတင်၍ မရပါ။ ၆၀ စက္ကန့်အကြာတွင် ပြန်စမ်းမည်...")
                     time.sleep(60)
             else:
-                sleep_time = min(600, max(180, (countdown_seconds - 900)))
-                print(f"💤 Far from entry window. Sleeping for {sleep_time / 60:.1f} minutes...")
-                time.sleep(sleep_time)
+                time.sleep(60)
 
         except Exception as e:
             print(f"⚠️ Main Loop Error: {e}")
