@@ -194,7 +194,11 @@ def advanced_market_scanner():
                 t_info = ticker_data[symbol]
 
                 funding_rate = float(p_info.get('lastFundingRate', 0)) * 100
-                next_funding_time = int(p_info.get('nextFundingTime', time.time() * 1000 + 3600000))
+                
+                # အချိန် မှန်ကန်စေရန် စစ်ဆေးခြင်း
+                raw_nft = p_info.get('nextFundingTime')
+                next_funding_time = int(raw_nft) if raw_nft and int(raw_nft) > 0 else int(time.time() * 1000 + 3600000)
+                
                 volume_24h = float(t_info.get('quoteVolume', 0))
 
                 if volume_24h < MIN_24H_VOLUME_USDT:
@@ -354,7 +358,8 @@ def get_next_funding_countdown():
         if res.status_code == 200:
             data = res.json()
             if data and isinstance(data, list):
-                next_times = [int(item['nextFundingTime']) for item in data if 'nextFundingTime' in item]
+                # အချိန် တန်ဖိုးမှန်ကန်သော (> 0) nextFundingTime များကိုသာ စစ်ဆေးယူခြင်း
+                next_times = [int(item['nextFundingTime']) for item in data if item.get('nextFundingTime') and int(item.get('nextFundingTime', 0)) > 0]
                 if next_times:
                     return min(next_times)
     except Exception:
