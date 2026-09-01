@@ -37,8 +37,8 @@ TRADE_AMOUNT_USDT = 60.0
 LEVERAGE = 1  
 
 # 🛡️ Advanced Safety & Profit Thresholds
-MIN_NET_PROFIT_THRESHOLD = 0.15  
-MIN_24H_VOLUME_USDT = 5000000    
+MIN_NET_PROFIT_THRESHOLD = -0.5  
+MIN_24H_VOLUME_USDT = 50000    
 
 def truncate_qty(qty, precision):
     if precision == 0:
@@ -122,19 +122,40 @@ def get_spot_balance(symbol):
 
 def get_all_perpetual_symbols():
     try:
-        res = requests.get(f"{FUTURES_BASE}/fapi/v1/exchangeInfo", timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            symbols = [
-                s['symbol'] for s in data.get('symbols', [])
+        # ၁။ Futures Testnet မှ ကွိုင်များကို ယူခြင်း
+        f_res = requests.get(f"{FUTURES_BASE}/fapi/v1/exchangeInfo", timeout=10)
+        f_symbols = set()
+        if f_res.status_code == 200:
+            f_data = f_res.json()
+            f_symbols = {
+                s['symbol'] for s in f_data.get('symbols', [])
                 if s.get('contractType') == 'PERPETUAL' 
                 and s.get('status') == 'TRADING' 
                 and s['symbol'].endswith('USDT')
                 and 'BTCDOM' not in s['symbol']
-            ]
-            return symbols
+            }
+
+        # ၂။ Spot Testnet မှ ကွိုင်များကို ယူခြင်း
+        s_res = requests.get(f"{SPOT_BASE}/api/v3/exchangeInfo", timeout=10)
+        s_symbols = set()
+        if s_res.status_code == 200:
+            s_data = s_res.json()
+            s_symbols = {
+                s['symbol'] for s in s_data.get('symbols', [])
+                if s.get('status') == 'TRADING' 
+                and s['symbol'].endswith('USDT')
+            }
+
+        # ၃။ Spot နှင့် Futures နှစ်ခုလုံးတွင်ရှိသော ကွိုင်များကိုသာ စစ်ထုတ်ခြင်း (Intersection)
+        valid_symbols = list(f_symbols.intersection(s_symbols))
+        
+        if valid_symbols:
+            return valid_symbols
+
     except Exception as e:
         print(f"⚠️ Error fetching dynamic symbols: {e}")
+        
+    # အကယ်၍ Error တက်ခဲ့ပါက အခြေခံကွိုင်များကိုသာ အသုံးပြုရန်
     return ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
 
 # 📊 [PIPELINE STEP: Funding History & Trend Check]
