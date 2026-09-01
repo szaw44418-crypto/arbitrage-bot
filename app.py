@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import time
 import requests
+from datetime import datetime
 from urllib.parse import urlencode
 from flask import Flask
 
@@ -126,7 +127,10 @@ def get_all_perpetual_symbols():
             data = res.json()
             symbols = [
                 s['symbol'] for s in data.get('symbols', [])
-                if s.get('contractType') == 'PERPETUAL' and s.get('status') == 'TRADING' and s['symbol'].endswith('USDT')
+                if s.get('contractType') == 'PERPETUAL' 
+                and s.get('status') == 'TRADING' 
+                and s['symbol'].endswith('USDT')
+                and 'BTCDOM' not in s['symbol']
             ]
             return symbols
     except Exception as e:
@@ -346,7 +350,7 @@ def close_positions(symbol, futures_qty, spot_qty):
 
 def get_next_funding_countdown():
     try:
-        res = requests.get(f"{FUTURES_BASE}/fapi/v1/premiumIndex", timeout=5)
+        res = requests.get(FUTURES_BASE + "/fapi/v1/premiumIndex", timeout=5)
         if res.status_code == 200:
             data = res.json()
             if data and isinstance(data, list):
@@ -359,7 +363,7 @@ def get_next_funding_countdown():
 
 def start_smart_bot():
     print("="*60)
-    print("🤖 FULL PIPELINE ARBITRAGE BOT STARTED (Optimized 2-Hour Schedule)")
+    print("🤖 FULL PIPELINE ARBITRAGE BOT STARTED (15-Min Window Optimized)")
     print("="*60)
 
     while True:
@@ -368,51 +372,50 @@ def start_smart_bot():
             next_funding_time = get_next_funding_countdown()
             countdown_seconds = (next_funding_time - server_time) / 1000.0
             
-            scan_threshold_seconds = 900 + 7200 
+            # Next Funding Fee အချိန်ကို တိကျစွာ ဖော်ပြပေးခြင်း
+            readable_funding_time = datetime.fromtimestamp(next_funding_time / 1000.0).strftime('%Y-%m-%d %H:%M:%S')
+            print(f"⏳ နောက်တစ်ကြိမ် Funding Fee ကောက်ခံမည့်အချိန်: {readable_funding_time} (ကျန်ချိန်: {countdown_seconds / 60:.1f} မိနစ်)")
+            
+            # ⏱️ နောက် Funding အချိန်မတိုင်မီ ၁၅ မိနစ် (၉၀၀ စက္ကန့်) အလိုတွင် စတင်စကင်ဖတ်ရန် သတ်မှတ်ခြင်း
+            scan_threshold_seconds = 900 
 
             if countdown_seconds > scan_threshold_seconds:
                 sleep_duration = countdown_seconds - scan_threshold_seconds
-                print(f"💤 Funding အချိန်နှင့် အလှမ်းဝေးသေးပါသည် ({countdown_seconds / 60:.1f} မိနစ် လိုသေးသည်)။ ၂ နာရီအလိုသို့ ရောက်ရန် {sleep_duration / 60:.1f} မိနစ် အိပ်စက်ပါမည်...")
+                print(f"💤 Funding အချိန်နှင့် ၁၅ မိနစ်အလိုသို့ ရောက်ရန် {sleep_duration / 60:.1f} မိနစ် အိပ်စက်ပါမည်...")
                 time.sleep(sleep_duration)
                 continue
 
-            print("🎯 သတ်မှတ်ထားသော ၂ နာရီအလို ဝင်းဒိုးသို့ ရောက်ရှိလာပြီဖြစ်ပါသဖြင့် စျေးကွက်ကို စတင်စကင်ဖတ်ပါပြီ...")
+            print("🎯 နောက် Funding အချိန်မတိုင်မီ ၁၅ မိနစ်အလို ဝင်းဒိုးသို့ ရောက်ရှိလာပြီဖြစ်ပါသဖြင့် စျေးကွက်ကို စတင်စကင်ဖတ်ပါပြီ...")
             symbol, funding_rate, net_profit, target_funding_time = advanced_market_scanner()
             
             if not symbol:
-                print("⏳ ကိုက်ညီသော ကွိုင် မတွေ့ရှိသေးပါ။ ၆၀ စက္ကန့်အကြာတွင် ထပ်စမ်းမည်...")
-                time.sleep(60)
+                print("⏳ ကိုက်ညီသော ကွိုင် မတွေ့ရှိသေးပါ။ ၃၀ စက္ကန့်အကြာတွင် ထပ်စမ်းမည်...")
+                time.sleep(30)
                 continue
 
-            current_srv_time = get_futures_server_time()
-            remaining_to_entry = (target_funding_time - current_srv_time) / 1000.0
+            print("🎯 သတ်မှတ်ချက်ပြည့်မီသော Coin တွေ့ရှိပြီဖြစ်၍ အော်ဒါ စတင်လုပ်ဆောင်နေပါပြီ...")
+            trade_result = execute_arbitrage(symbol, net_profit, target_funding_time)
 
-            if remaining_to_entry <= 900: 
-                print("🎯 Target entry window သို့ ရောက်ပါပြီ! အော်ဒါ စတင်လုပ်ဆောင်နေပါပြီ...")
-                trade_result = execute_arbitrage(symbol, net_profit, target_funding_time)
+            if trade_result:
+                symbol, futures_qty, spot_qty, t_funding_time = trade_result
+                wait_seconds = ((t_funding_time - get_futures_server_time()) / 1000.0) + 15
 
-                if trade_result:
-                    symbol, futures_qty, spot_qty, t_funding_time = trade_result
-                    wait_seconds = ((t_funding_time - get_futures_server_time()) / 1000.0) + 30
-
-                    if wait_seconds > 0:
-                        print(f"⏳ Funding Fee ကောက်ခံမည့်အချိန်အထိ Position ကို ထိန်းသိမ်းထားပါမည် ({wait_seconds / 60:.1f} မိနစ် စောင့်မည်)...")
-                        time.sleep(wait_seconds)
-                    else:
-                        time.sleep(30)
-
-                    close_positions(symbol, futures_qty, spot_qty)
-                    print("💤 Cycle ပြီးဆုံးသွားပါပြီ။ နောက်တစ်ကြိမ်အတွက် ၃ နာရီ အိပ်စက်ပါမည်...")
-                    time.sleep(10800)
+                if wait_seconds > 0:
+                    print(f"⏳ Funding Fee ကောက်ခံမည့်အချိန်အထိ Position ကို ထိန်းသိမ်းထားပါမည် ({wait_seconds / 60:.1f} မိနစ် စောင့်မည်)...")
+                    time.sleep(wait_seconds)
                 else:
-                    print("⚠️ အော်ဒါတင်၍ မရပါ။ ၆၀ စက္ကန့်အကြာတွင် ပြန်စမ်းမည်...")
-                    time.sleep(60)
-            else:
+                    time.sleep(15)
+
+                close_positions(symbol, futures_qty, spot_qty)
+                print("💤 Cycle ပြီးဆုံးသွားပါပြီ။ နောက်တစ်ကြိမ်အတွက် ခေတ္တ အိပ်စက်ပါမည်...")
                 time.sleep(60)
+            else:
+                print("⚠️ အော်ဒါတင်၍ မရပါ။ ၃၀ စက္ကန့်အကြာတွင် ပြန်စမ်းမည်...")
+                time.sleep(30)
 
         except Exception as e:
             print(f"⚠️ Main Loop Error: {e}")
-            time.sleep(60)
+            time.sleep(30)
 
 if __name__ == "__main__":
     start_smart_bot()
