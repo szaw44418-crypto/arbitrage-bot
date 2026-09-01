@@ -4,12 +4,21 @@ import threading
 import hmac
 import hashlib
 import time
+import sys
 import requests
 from datetime import datetime
 from urllib.parse import urlencode
 from flask import Flask
 
 app = Flask(__name__)
+
+# ==========================================
+# 📢 INSTANT LOGGING HELPER
+# ==========================================
+def log_info(msg):
+    """Render Terminal တွင် Log များ ချက်ချင်း ပေါ်စေရန် flush=True ဖြင့် ထုတ်ပေးသည့် Helper"""
+    print(msg, flush=True)
+    sys.stdout.flush()
 
 @app.route('/', methods=['GET', 'HEAD'])
 def health_check():
@@ -89,25 +98,25 @@ def send_signed_request(base_url, endpoint, api_key, secret_key, method="POST", 
     return requests.post(url, headers=headers).json() if method == "POST" else requests.get(url, headers=headers).json()
 
 def set_margin_and_leverage(symbol, leverage):
-    print(f"⚙️ Setting Margin Type to ISOLATED for {symbol}...")
+    log_info(f"⚙️ Setting Margin Type to ISOLATED for {symbol}...")
     margin_res = send_signed_request(FUTURES_BASE, "/fapi/v1/marginType", FUTURES_API_KEY, FUTURES_SECRET_KEY, "POST", {
         'symbol': symbol,
         'marginType': 'ISOLATED'
     })
     if margin_res.get('code') == -4046 or margin_res.get('msg') == 'success':
-        print(f"✅ Margin Type correctly set/verified as ISOLATED.")
+        log_info(f"✅ Margin Type correctly set/verified as ISOLATED.")
     else:
-        print(f"⚠️ Margin Type warning: {margin_res}")
+        log_info(f"⚠️ Margin Type warning: {margin_res}")
 
-    print(f"⚙️ Setting Leverage to {leverage}x for {symbol}...")
+    log_info(f"⚙️ Setting Leverage to {leverage}x for {symbol}...")
     lev_res = send_signed_request(FUTURES_BASE, "/fapi/v1/leverage", FUTURES_API_KEY, FUTURES_SECRET_KEY, "POST", {
         'symbol': symbol,
         'leverage': leverage
     })
     if 'leverage' in lev_res:
-        print(f"✅ Leverage successfully set to {lev_res['leverage']}x.")
+        log_info(f"✅ Leverage successfully set to {lev_res['leverage']}x.")
     else:
-        print(f"⚠️ Leverage warning: {lev_res}")
+        log_info(f"⚠️ Leverage warning: {lev_res}")
 
 def get_spot_balance(symbol):
     asset = symbol.replace("USDT", "")
@@ -153,7 +162,7 @@ def get_all_perpetual_symbols():
             return valid_symbols
 
     except Exception as e:
-        print(f"⚠️ Error fetching dynamic symbols: {e}")
+        log_info(f"⚠️ Error fetching dynamic symbols: {e}")
         
     # အကယ်၍ Error တက်ခဲ့ပါက အခြေခံကွိုင်များကိုသာ အသုံးပြုရန်
     return ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
@@ -191,11 +200,11 @@ def simulate_slippage(symbol, volume_24h):
 
 # 🌟 [ADVANCED FULL-PIPELINE MARKET SCANNER & RISK SCORING]
 def advanced_market_scanner():
-    print("\n🔍 [FULL PIPELINE SCANNING: History, Depth, Fees & Risk Scoring...]")
+    log_info("\n🔍 [FULL PIPELINE SCANNING: History, Depth, Fees & Risk Scoring...]")
     try:
         res_prem = requests.get(f"{FUTURES_BASE}/fapi/v1/premiumIndex", timeout=10)
         if res_prem.status_code in [418, 429]:
-            print(f"🚨 Rate Limited! Sleeping for 15 minutes...")
+            log_info(f"🚨 Rate Limited! Sleeping for 15 minutes...")
             time.sleep(900)
             return None, 0, 0, 0
             
@@ -257,21 +266,21 @@ def advanced_market_scanner():
                 })
 
         if not candidates:
-            print("⚠️ No coins met the strict pipeline criteria right now.")
+            log_info("⚠️ No coins met the strict pipeline criteria right now.")
             return None, 0, 0, 0
 
         candidates.sort(key=lambda x: x['score'], reverse=True)
         best = candidates[0]
 
-        print(f"🌟 [BEST OPPORTUNITY FOUND]: {best['symbol']}")
-        print(f"   📊 Funding Rate: {best['funding_rate']:.4f}% | Expected Net Profit: {best['net_profit']:.4f}%")
-        print(f"   💧 Volume: ${best['volume_24h']:,.2f} | OI: {best['open_interest']:,.2f}")
-        print(f"   🏆 Risk-Adjusted Score: {best['score']:.2f}")
+        log_info(f"🌟 [BEST OPPORTUNITY FOUND]: {best['symbol']}")
+        log_info(f"   📊 Funding Rate: {best['funding_rate']:.4f}% | Expected Net Profit: {best['net_profit']:.4f}%")
+        log_info(f"   💧 Volume: ${best['volume_24h']:,.2f} | OI: {best['open_interest']:,.2f}")
+        log_info(f"   🏆 Risk-Adjusted Score: {best['score']:.2f}")
 
         return best['symbol'], best['funding_rate'], best['net_profit'], best['next_funding_time']
 
     except Exception as e:
-        print(f"⚠️ Pipeline Scanner Error: {e}")
+        log_info(f"⚠️ Pipeline Scanner Error: {e}")
         time.sleep(30)
 
     return None, 0, 0, 0
@@ -303,30 +312,30 @@ def get_spot_qty_precision(symbol):
 
 def execute_arbitrage(symbol, net_profit, next_funding_time):
     if net_profit < MIN_NET_PROFIT_THRESHOLD:
-        print(f"⚠️ Net Profit ({net_profit:.4f}%) is below safety threshold.")
+        log_info(f"⚠️ Net Profit ({net_profit:.4f}%) is below safety threshold.")
         return False
 
-    print(f"\n⏳ Executing Spot BUY (${TRADE_AMOUNT_USDT} USDT) on {symbol}...")
+    log_info(f"\n⏳ Executing Spot BUY (${TRADE_AMOUNT_USDT} USDT) on {symbol}...")
     spot_res = send_signed_request(SPOT_BASE, "/api/v3/order", SPOT_API_KEY, SPOT_SECRET_KEY, "POST", {
         'symbol': symbol, 'side': 'BUY', 'type': 'MARKET', 'quoteOrderQty': str(TRADE_AMOUNT_USDT)
     })
 
     if 'orderId' not in spot_res:
-        print(f"❌ [SPOT ERROR]: {spot_res}")
+        log_info(f"❌ [SPOT ERROR]: {spot_res}")
         return False
-    print(f"✅ [SPOT SUCCESS] Order ID: {spot_res['orderId']}")
+    log_info(f"=== [SPOT ORDER EXECUTED] === | Pair: {symbol} | Order ID: {spot_res['orderId']} | Side: BUY")
 
     time.sleep(1)
     actual_spot_qty = get_spot_balance(symbol)
 
-    print(f"⏳ Executing Futures SHORT on {symbol}...")
+    log_info(f"⏳ Executing Futures SHORT on {symbol}...")
     set_margin_and_leverage(symbol, LEVERAGE)
     
     f_precision = get_futures_qty_precision(symbol)
     futures_qty = truncate_qty(actual_spot_qty, f_precision)
 
     if futures_qty <= 0:
-        print("❌ [ERROR] Futures quantity calculated as zero. Selling Spot immediately.")
+        log_info("❌ [ERROR] Futures quantity calculated as zero. Selling Spot immediately.")
         s_precision = get_spot_qty_precision(symbol)
         send_signed_request(SPOT_BASE, "/api/v3/order", SPOT_API_KEY, SPOT_SECRET_KEY, "POST", {
             'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': truncate_qty(actual_spot_qty, s_precision)
@@ -338,12 +347,12 @@ def execute_arbitrage(symbol, net_profit, next_funding_time):
     })
 
     if 'orderId' in futures_res:
-        print(f"✅ [FUTURES SUCCESS] Order ID: {futures_res['orderId']}")
-        print(f"🎉 Position Opened | Expected Net Profit: {net_profit:.4f}%")
+        log_info(f"=== [FUTURES ORDER EXECUTED] === | Pair: {symbol} | Order ID: {futures_res['orderId']} | Side: SELL (SHORT) | Qty: {futures_qty}")
+        log_info(f"🎉 Position Opened | Expected Net Profit: {net_profit:.4f}%")
         return symbol, futures_qty, actual_spot_qty, next_funding_time
     else:
-        print(f"❌ [FUTURES ERROR]: {futures_res}")
-        print("⚠️ Emergency! Selling purchased Spot assets immediately...")
+        log_info(f"❌ [FUTURES ERROR]: {futures_res}")
+        log_info("⚠️ Emergency! Selling purchased Spot assets immediately...")
         s_precision = get_spot_qty_precision(symbol)
         avail_spot = get_spot_balance(symbol)
         send_signed_request(SPOT_BASE, "/api/v3/order", SPOT_API_KEY, SPOT_SECRET_KEY, "POST", {
@@ -352,12 +361,12 @@ def execute_arbitrage(symbol, net_profit, next_funding_time):
         return False
 
 def close_positions(symbol, futures_qty, spot_qty):
-    print(f"\n🔒 [CLOSING POSITIONS & REALIZING P&L] Unwinding trades for {symbol}...")
+    log_info(f"\n🔒 [CLOSING POSITIONS & REALIZING P&L] Unwinding trades for {symbol}...")
 
     f_close = send_signed_request(FUTURES_BASE, "/fapi/v1/order", FUTURES_API_KEY, FUTURES_SECRET_KEY, "POST", {
         'symbol': symbol, 'side': 'BUY', 'type': 'MARKET', 'quantity': futures_qty, 'reduceOnly': 'true'
     })
-    print(f"📦 Futures Closed: {f_close}")
+    log_info(f"=== [FUTURES CLOSE ORDER EXECUTED] === | Pair: {symbol} | Response: {f_close}")
 
     s_precision = get_spot_qty_precision(symbol)
     avail_spot = get_spot_balance(symbol)
@@ -367,11 +376,11 @@ def close_positions(symbol, futures_qty, spot_qty):
         s_close = send_signed_request(SPOT_BASE, "/api/v3/order", SPOT_API_KEY, SPOT_SECRET_KEY, "POST", {
             'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': clean_spot_qty
         })
-        print(f"📦 Spot Sold: {s_close}")
+        log_info(f"=== [SPOT CLOSE ORDER EXECUTED] === | Pair: {symbol} | Response: {s_close}")
     else:
-        print("⚠️ Available Spot Quantity was zero.")
+        log_info("⚠️ Available Spot Quantity was zero.")
 
-    print("✨ Arbitrage Cycle Completed Successfully & P&L Realized!")
+    log_info("✨ Arbitrage Cycle Completed Successfully & P&L Realized!")
 
 def get_next_funding_countdown():
     try:
@@ -388,9 +397,9 @@ def get_next_funding_countdown():
     return int(time.time() * 1000) + 3600000
 
 def start_smart_bot():
-    print("="*60)
-    print("🤖 FULL PIPELINE ARBITRAGE BOT STARTED (15-Min Window Optimized)")
-    print("="*60)
+    log_info("="*60)
+    log_info("🤖 FULL PIPELINE ARBITRAGE BOT STARTED (15-Min Window Optimized)")
+    log_info("="*60)
 
     while True:
         try:
@@ -400,26 +409,26 @@ def start_smart_bot():
             
             # Next Funding Fee အချိန်ကို တိကျစွာ ဖော်ပြပေးခြင်း
             readable_funding_time = datetime.fromtimestamp(next_funding_time / 1000.0).strftime('%Y-%m-%d %H:%M:%S')
-            print(f"⏳ နောက်တစ်ကြိမ် Funding Fee ကောက်ခံမည့်အချိန်: {readable_funding_time} (ကျန်ချိန်: {countdown_seconds / 60:.1f} မိနစ်)")
+            log_info(f"⏳ နောက်တစ်ကြိမ် Funding Fee ကောက်ခံမည့်အချိန်: {readable_funding_time} (ကျန်ချိန်: {countdown_seconds / 60:.1f} မိနစ်)")
             
             # ⏱️ နောက် Funding အချိန်မတိုင်မီ ၁၅ မိနစ် (၉၀၀ စက္ကန့်) အလိုတွင် စတင်စကင်ဖတ်ရန် သတ်မှတ်ခြင်း
             scan_threshold_seconds = 900 
 
             if countdown_seconds > scan_threshold_seconds:
                 sleep_duration = countdown_seconds - scan_threshold_seconds
-                print(f"💤 Funding အချိန်နှင့် ၁၅ မိနစ်အလိုသို့ ရောက်ရန် {sleep_duration / 60:.1f} မိနစ် အိပ်စက်ပါမည်...")
+                log_info(f"💤 Funding အချိန်နှင့် ၁၅ မိနစ်အလိုသို့ ရောက်ရန် {sleep_duration / 60:.1f} မိနစ် အိပ်စက်ပါမည်...")
                 time.sleep(sleep_duration)
                 continue
 
-            print("🎯 နောက် Funding အချိန်မတိုင်မီ ၁၅ မိနစ်အလို ဝင်းဒိုးသို့ ရောက်ရှိလာပြီဖြစ်ပါသဖြင့် စျေးကွက်ကို စတင်စကင်ဖတ်ပါပြီ...")
+            log_info("🎯 နောက် Funding အချိန်မတိုင်မီ ၁၅ မိနစ်အလို ဝင်းဒိုးသို့ ရောက်ရှိလာပြီဖြစ်ပါသဖြင့် စျေးကွက်ကို စတင်စကင်ဖတ်ပါပြီ...")
             symbol, funding_rate, net_profit, target_funding_time = advanced_market_scanner()
             
             if not symbol:
-                print("⏳ ကိုက်ညီသော ကွိုင် မတွေ့ရှိသေးပါ။ ၃၀ စက္ကန့်အကြာတွင် ထပ်စမ်းမည်...")
+                log_info("⏳ ကိုက်ညီသော ကွိုင် မတွေ့ရှိသေးပါ။ ၃၀ စက္ကန့်အကြာတွင် ထပ်စမ်းမည်...")
                 time.sleep(30)
                 continue
 
-            print("🎯 သတ်မှတ်ချက်ပြည့်မီသော Coin တွေ့ရှိပြီဖြစ်၍ အော်ဒါ စတင်လုပ်ဆောင်နေပါပြီ...")
+            log_info("🎯 သတ်မှတ်ချက်ပြည့်မီသော Coin တွေ့ရှိပြီဖြစ်၍ အော်ဒါ စတင်လုပ်ဆောင်နေပါပြီ...")
             trade_result = execute_arbitrage(symbol, net_profit, target_funding_time)
 
             if trade_result:
@@ -427,20 +436,20 @@ def start_smart_bot():
                 wait_seconds = ((t_funding_time - get_futures_server_time()) / 1000.0) + 15
 
                 if wait_seconds > 0:
-                    print(f"⏳ Funding Fee ကောက်ခံမည့်အချိန်အထိ Position ကို ထိန်းသိမ်းထားပါမည် ({wait_seconds / 60:.1f} မိနစ် စောင့်မည်)...")
+                    log_info(f"⏳ Funding Fee ကောက်ခံမည့်အချိန်အထိ Position ကို ထိန်းသိမ်းထားပါမည် ({wait_seconds / 60:.1f} မိနစ် စောင့်မည်)...")
                     time.sleep(wait_seconds)
                 else:
                     time.sleep(15)
 
                 close_positions(symbol, futures_qty, spot_qty)
-                print("💤 Cycle ပြီးဆုံးသွားပါပြီ။ နောက်တစ်ကြိမ်အတွက် ခေတ္တ အိပ်စက်ပါမည်...")
+                log_info("💤 Cycle ပြီးဆုံးသွားပါပြီ။ နောက်တစ်ကြိမ်အတွက် ခေတ္တ အိပ်စက်ပါမည်...")
                 time.sleep(60)
             else:
-                print("⚠️ အော်ဒါတင်၍ မရပါ။ ၃၀ စက္ကန့်အကြာတွင် ပြန်စမ်းမည်...")
+                log_info("⚠️ အော်ဒါတင်၍ မရပါ။ ၃၀ စက္ကန့်အကြာတွင် ပြန်စမ်းမည်...")
                 time.sleep(30)
 
         except Exception as e:
-            print(f"⚠️ Main Loop Error: {e}")
+            log_info(f"⚠️ Main Loop Error: {e}")
             time.sleep(30)
 
 if __name__ == "__main__":
