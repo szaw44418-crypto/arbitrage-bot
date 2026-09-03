@@ -47,7 +47,7 @@ LEVERAGE = 1
 
 # 🛡️ Optimized Safety & Strict Profitability Thresholds
 MIN_NET_PROFIT_THRESHOLD = 0.15   # 🎯 အနည်းဆုံး 0.15% အသားတင်အမြတ်ရမှသာ Trade လုပ်မည်
-MIN_24H_VOLUME_USDT = 1000000     # 💧 Liquidity ကောင်းမွန်သော Coin များကိုသာ သုံးမည် ($1,000,000+)
+MIN_24H_VOLUME_USDT = 100000     # 💧 Liquidity ကောင်းမွန်သော Coin များကိုသာ သုံးမည် ($100,000+)
 
 def truncate_qty(qty, precision):
     if precision == 0:
