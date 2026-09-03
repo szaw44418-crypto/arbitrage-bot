@@ -268,8 +268,8 @@ def advanced_market_scanner(target_funding_time):
                 if expected_net_profit < MIN_NET_PROFIT_THRESHOLD:
                     continue
 
-                vol_score = min(volume_24h / 200000000.0, 1.0) * 30
-                oi_score = min(open_interest / 2000000.0, 1.0) * 30
+                vol_score = min(volume_24h / 20000.0, 1.0) * 30
+                oi_score = min(open_interest / 20000.0, 1.0) * 30
                 profit_score = min(expected_net_profit, 5.0) * 40
                 slippage_penalty = estimated_slippage * 10
 
