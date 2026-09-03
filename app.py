@@ -184,7 +184,7 @@ def simulate_slippage(symbol, volume_24h):
             spread_pct = ((best_ask - best_bid) / best_ask) * 100
 
             dynamic_slip = max(0.01, spread_pct / 2.0)
-            if volume_24h < 20000000:
+            if volume_24h < 20000:
                 dynamic_slip += 0.02
             return dynamic_slip
     except Exception:
