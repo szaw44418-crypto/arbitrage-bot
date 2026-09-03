@@ -46,8 +46,8 @@ TRADE_AMOUNT_USDT = 60.0
 LEVERAGE = 1  
 
 # 🛡️ UPGRADED SAFETY & STRICT PROFITABILITY THRESHOLDS
-MIN_NET_PROFIT_THRESHOLD = 0.15   # 🎯 အနည်းဆုံး 0.15% အသားတင်အမြတ်ကျန်မှသာ Trade လုပ်မည် (Basis Risk & Slippage ကာမိရန်)
-MIN_24H_VOLUME_USDT = 50,000      # 💧 Liquidity ကောင်းမွန်သော Coin များကိုသာ သုံးမည် ($50,000+)
+MIN_NET_PROFIT_THRESHOLD = 0.1   # 🎯 အနည်းဆုံး 0.1 % အသားတင်အမြတ်ကျန်မှသာ Trade လုပ်မည် (Basis Risk & Slippage ကာမိရန်)
+MIN_24H_VOLUME_USDT = 50,00      # 💧 Liquidity ကောင်းမွန်သော Coin များကိုသာ သုံးမည် ($50,00+)
 
 def truncate_qty(qty, precision):
     if precision == 0:
