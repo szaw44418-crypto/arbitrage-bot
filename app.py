@@ -45,9 +45,9 @@ FUTURES_SECRET_KEY = os.environ.get("FUTURES_SECRET_KEY", "b64gEodONh8DMFPsX7Kaj
 TRADE_AMOUNT_USDT = 60.0
 LEVERAGE = 1  
 
-# 🛡️ Optimized Safety & Strict Profitability Thresholds
-MIN_NET_PROFIT_THRESHOLD = 0.15   # 🎯 အနည်းဆုံး 0.15% အသားတင်အမြတ်ရမှသာ Trade လုပ်မည်
-MIN_24H_VOLUME_USDT = 50000     # 💧 Liquidity ကောင်းမွန်သော Coin များကိုသာ သုံးမည် ($50,000+)
+# 🛡️ UPGRADED SAFETY & STRICT PROFITABILITY THRESHOLDS
+MIN_NET_PROFIT_THRESHOLD = 0.45   # 🎯 အနည်းဆုံး 0.45% အသားတင်အမြတ်ကျန်မှသာ Trade လုပ်မည် (Basis Risk & Slippage ကာမိရန်)
+MIN_24H_VOLUME_USDT = 50,000      # 💧 Liquidity ကောင်းမွန်သော Coin များကိုသာ သုံးမည် ($50,000+)
 
 def truncate_qty(qty, precision):
     if precision == 0:
@@ -191,17 +191,17 @@ def simulate_slippage(symbol, volume_24h):
         pass
     return 0.03
 
-# 📊 Price Extraction Helper Function
+# 📊 Robust Execution Price Extraction Helper
 def parse_fill_price(order_res, symbol, market_type="SPOT"):
     try:
-        if 'fills' in order_res and len(order_res['fills']) > 0:
+        if isinstance(order_res, dict) and 'fills' in order_res and len(order_res['fills']) > 0:
             total_val = sum(float(f['price']) * float(f['qty']) for f in order_res['fills'])
             total_qty = sum(float(f['qty']) for f in order_res['fills'])
             if total_qty > 0:
                 return total_val / total_qty
-        if float(order_res.get('executedQty', 0)) > 0 and float(order_res.get('cummulativeQuoteQty', 0)) > 0:
+        if isinstance(order_res, dict) and float(order_res.get('executedQty', 0)) > 0 and float(order_res.get('cummulativeQuoteQty', 0)) > 0:
             return float(order_res.get('cummulativeQuoteQty')) / float(order_res.get('executedQty'))
-        if float(order_res.get('avgPrice', 0)) > 0:
+        if isinstance(order_res, dict) and float(order_res.get('avgPrice', 0)) > 0:
             return float(order_res.get('avgPrice'))
     except Exception:
         pass
@@ -275,7 +275,6 @@ def advanced_market_scanner(target_funding_time):
 
                 risk_composite_score = vol_score + oi_score + profit_score - slippage_penalty
 
-                # Funding Interval Calculation (Default 8 Hours if not available)
                 funding_interval = 8
 
                 candidates.append({
@@ -336,7 +335,7 @@ def get_spot_qty_precision(symbol):
 
 def execute_arbitrage(symbol, net_profit, next_funding_time, funding_rate, funding_interval):
     if net_profit < MIN_NET_PROFIT_THRESHOLD:
-        log_info(f"⚠️ Net Profit ({net_profit:.4f}%) is below safety threshold.")
+        log_info(f"⚠️ Net Profit ({net_profit:.4f}%) is below safety threshold ({MIN_NET_PROFIT_THRESHOLD}%).")
         return False
 
     log_info(f"\n⏳ Executing Spot BUY (${TRADE_AMOUNT_USDT} USDT) on {symbol}...")
@@ -351,7 +350,7 @@ def execute_arbitrage(symbol, net_profit, next_funding_time, funding_rate, fundi
 
     spot_entry_price = parse_fill_price(spot_res, symbol, "SPOT")
 
-    # ⚡ Speed Optimization: မလိုအပ်သော Sleep Time ကို ဖယ်ရှားပြီး Balance ချက်ချင်း ရယူခြင်း
+    # ⚡ Balance ချက်ချင်း ရယူခြင်း
     actual_spot_qty = get_spot_balance(symbol)
 
     log_info(f"⏳ Executing Futures SHORT on {symbol}...")
@@ -446,7 +445,7 @@ def generate_trade_report(trade_data, spot_exit_price, futures_exit_price, exit_
     nft_dt = datetime.fromtimestamp(trade_data['next_funding_time'] / 1000.0)
     next_funding_time_str = nft_dt.strftime('%Y-%m-%d %H:%M:%S')
 
-    # Fee Calculations (Spot ~0.1%, Futures ~0.04% per order)
+    # Fee Calculations (Spot ~0.1%, Futures ~0.04%)
     spot_buy_val = capital
     spot_sell_val = trade_data['spot_qty'] * spot_exit_price if spot_exit_price > 0 else capital
     spot_fee = (spot_buy_val * 0.001) + (spot_sell_val * 0.001)
@@ -463,7 +462,7 @@ def generate_trade_report(trade_data, spot_exit_price, futures_exit_price, exit_
     # Funding Income
     funding_income = futures_entry_val * (funding_rate / 100.0)
 
-    # Basis P&L (Price Movement difference between Spot Buy and Futures Short)
+    # Basis P&L
     spot_pnl = (spot_exit_price - spot_entry) * trade_data['spot_qty'] if spot_exit_price > 0 else 0.0
     futures_pnl = (futures_entry - futures_exit_price) * trade_data['futures_qty'] if futures_exit_price > 0 else 0.0
     basis_pnl = spot_pnl + futures_pnl
@@ -554,13 +553,15 @@ def start_smart_bot():
 
             if trade_data:
                 t_funding_time = trade_data['next_funding_time']
-                wait_seconds = ((t_funding_time - get_futures_server_time()) / 1000.0) + 15
+                
+                # 🛡️ Funding အချိန်ပြီးနောက် ၄၅ စက္ကန့်အထိ စောင့်ဆိုင်းပါမည် (Spread စျေးကွက် ပြန်လည်တည်ငြိမ်ပြီးမှ Position ပိတ်ရန်)
+                wait_seconds = ((t_funding_time - get_futures_server_time()) / 1000.0) + 45
 
                 if wait_seconds > 0:
                     log_info(f"⏳ Funding Fee ကောက်ခံမည့်အချိန်အထိ Position ကို ထိန်းသိမ်းထားပါမည် ({wait_seconds / 60:.1f} မိနစ် စောင့်မည်)...")
                     time.sleep(wait_seconds)
                 else:
-                    time.sleep(15)
+                    time.sleep(45)
 
                 close_positions(trade_data)
                 log_info("💤 Cycle ပြီးဆုံးသွားပါပြီ။ နောက်တစ်ကြိမ်အတွက် ခေတ္တ အိပ်စက်ပါမည်...")
