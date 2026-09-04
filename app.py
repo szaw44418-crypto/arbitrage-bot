@@ -46,8 +46,8 @@ TRADE_AMOUNT_USDT = 60.0
 LEVERAGE = 1  
 
 # 🛡️ SAFETY & PROFITABILITY THRESHOLDS
-MIN_NET_PROFIT_THRESHOLD = 0.20   # 🎯 Testnet စမ်းသပ်ရန် 0.20% (Mainnet တွင် 0.45% ထားပါ)
-MIN_24H_VOLUME_USDT = 100000     # 💧 Liquidity Minimum Limit ($100,000+)
+MIN_NET_PROFIT_THRESHOLD = 0.30   # 🎯 Testnet စမ်းသပ်ရန် 0.30% (Mainnet တွင် 0.45% ထားပါ)
+MIN_24H_VOLUME_USDT = 500000     # 💧 Liquidity Minimum Limit ($500,000+)
 
 def truncate_qty(qty, precision):
     if precision == 0:
