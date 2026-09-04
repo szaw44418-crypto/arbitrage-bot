@@ -36,7 +36,7 @@ FUTURES_BASE = "https://fapi.binance.com"
 # ==========================================
 SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))  # တွက်ချက်မှုပြုလုပ်မည့် စမ်းသပ်ပမာဏ ($100)
 MIN_NET_PROFIT_THRESHOLD = 0.25   # 🎯 အခွန်နှင့် Slippage နုတ်ပြီး အနည်းဆုံး ရရှိမည့် အသားတင်အမြတ် (%)
-MIN_24H_VOLUME_USDT = 1000000     # 💧 Liquidity မြင့်မားသော Coin များသာ ရွေးမည် ($1,000,000+ Volume)
+MIN_24H_VOLUME_USDT = 100000     # 💧 Liquidity မြင့်မားသော Coin များသာ ရွေးမည် ($100,000+ Volume)
 
 # ==========================================
 # 🛠️ HELPER FUNCTIONS
