@@ -25,10 +25,14 @@ threading.Thread(target=run_web_server, daemon=True).start()
 SPOT_BASE = "https://api.binance.com"
 FUTURES_BASE = "https://fapi.binance.com"
 
-# 🌐 Browser အဖြစ် ဟန်ဆောင်ရန် Header ထည့်သွင်းခြင်း
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-}
+# 🌐 Browser အပြည့်အဝ ဟန်ဆောင်ရန် Session နှင့် Headers ထည့်သွင်းခြင်း
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'application/json',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Cache-Control': 'no-cache'
+})
 
 SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
 MIN_NET_PROFIT_THRESHOLD = 0.25
@@ -36,14 +40,14 @@ MIN_24H_VOLUME_USDT = 1000000
 
 def get_all_perpetual_symbols():
     try:
-        f_res = requests.get(f"{FUTURES_BASE}/fapi/v1/exchangeInfo", headers=HEADERS, timeout=10)
+        f_res = session.get(f"{FUTURES_BASE}/fapi/v1/exchangeInfo", timeout=10)
         f_symbols = set()
         if f_res.status_code == 200:
             for s in f_res.json().get('symbols', []):
                 if s.get('contractType') == 'PERPETUAL' and s.get('status') == 'TRADING' and s['symbol'].endswith('USDT'):
                     f_symbols.add(s['symbol'])
 
-        s_res = requests.get(f"{SPOT_BASE}/api/v3/exchangeInfo", headers=HEADERS, timeout=10)
+        s_res = session.get(f"{SPOT_BASE}/api/v3/exchangeInfo", timeout=10)
         s_symbols = set()
         if s_res.status_code == 200:
             for s in s_res.json().get('symbols', []):
@@ -57,7 +61,7 @@ def get_all_perpetual_symbols():
 
 def check_funding_history(symbol):
     try:
-        res = requests.get(f"{FUTURES_BASE}/fapi/v1/fundingRate", headers=HEADERS, params={"symbol": symbol, "limit": 3}, timeout=5)
+        res = session.get(f"{FUTURES_BASE}/fapi/v1/fundingRate", params={"symbol": symbol, "limit": 3}, timeout=5)
         if res.status_code == 200:
             rates = res.json()
             if rates and len(rates) >= 3:
@@ -69,7 +73,7 @@ def check_funding_history(symbol):
 
 def calculate_slippage(symbol):
     try:
-        spot_depth = requests.get(f"{SPOT_BASE}/api/v3/depth", headers=HEADERS, params={"symbol": symbol, "limit": 5}, timeout=5).json()
+        spot_depth = session.get(f"{SPOT_BASE}/api/v3/depth", params={"symbol": symbol, "limit": 5}, timeout=5).json()
         if 'asks' in spot_depth and spot_depth['asks'] and 'bids' in spot_depth and spot_depth['bids']:
             best_ask = float(spot_depth['asks'][0][0])
             best_bid = float(spot_depth['bids'][0][0])
@@ -85,17 +89,17 @@ def scan_and_report_opportunities():
     log_info("="*60)
 
     try:
-        res_prem = requests.get(f"{FUTURES_BASE}/fapi/v1/premiumIndex", headers=HEADERS, timeout=10)
+        res_prem = session.get(f"{FUTURES_BASE}/fapi/v1/premiumIndex", timeout=10)
         
-        # Status Code ကို မူတည်၍ Error ကြည့်ရန်
         if res_prem.status_code != 200:
             log_info(f"⚠️ Premium Index API ဖတ်ယူ၍ မရပါ။ (Status Code: {res_prem.status_code})")
-            if res_prem.status_code == 451 or res_prem.status_code == 403:
-                log_info("⛔ Binance မှ Render စာဗာ IP (US Region) ကို Futures API ကြည့်ရှုခွင့် ပိတ်ထားပါသည်။")
+            if res_prem.status_code == 418:
+                log_info("⛔ Binance IP Ban (418) ဖြစ်သွားပါသည်။ API Request များကို ၁၀ မိနစ်ခန့် ရပ်နားထားပါမည်...")
+                time.sleep(600)  # 418 တက်ပါက ၁၀ မိနစ် ငြိမ်ပေးမည်
             return
 
         prem_data = {item['symbol']: item for item in res_prem.json() if isinstance(item, dict)}
-        res_ticker = requests.get(f"{FUTURES_BASE}/fapi/v1/ticker/24hr", headers=HEADERS, timeout=10)
+        res_ticker = session.get(f"{FUTURES_BASE}/fapi/v1/ticker/24hr", timeout=10)
         ticker_data = {item['symbol']: item for item in res_ticker.json() if isinstance(item, dict)}
 
         all_symbols = get_all_perpetual_symbols()
@@ -188,8 +192,8 @@ def start_dry_run_bot():
     while True:
         try:
             scan_and_report_opportunities()
-            log_info("💤 Sleeping for 3 minutes before next scan...\n")
-            time.sleep(180)
+            log_info("💤 Sleeping for 5 minutes before next scan...\n")
+            time.sleep(300)
         except Exception as e:
             log_info(f"⚠️ Main Loop Error: {e}")
             time.sleep(60)
