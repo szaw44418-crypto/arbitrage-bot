@@ -25,31 +25,42 @@ threading.Thread(target=run_web_server, daemon=True).start()
 SPOT_BASE = "https://api.binance.com"
 FUTURES_BASE = "https://fapi.binance.com"
 
-# 🌐 Browser အပြည့်အဝ ဟန်ဆောင်ရန် Session နှင့် Headers ထည့်သွင်းခြင်း
+# Proxy 設定 (လိုအပ်ပါက Environment Variable မှလည်း ထည့်နိုင်ပါသည်)
+PROXIES = None
+# PROXIES = {"https": "http://your-proxy-address:port"} # Proxy သုံးပါက ဒီနေရာတွင် ဖြည့်ပါ
+
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Accept': 'application/json',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Cache-Control': 'no-cache'
 })
 
 SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
 MIN_NET_PROFIT_THRESHOLD = 0.25
 MIN_24H_VOLUME_USDT = 1000000
 
+def safe_get(url, params=None):
+    """Binance API ခေါ်ဆိုစဉ် 418/403 မဖြစ်အောင် 3 စက္ကန့်ခြား၍ ခေါ်ဆိုပေးသော Function"""
+    time.sleep(1) # API Request များ တပြိုင်နက် မသွားစေရန် 1 စက္ကန့် စောင့်ပေးခြင်း
+    try:
+        res = session.get(url, params=params, proxies=PROXIES, timeout=10)
+        return res
+    except Exception as e:
+        log_info(f"⚠️ Request Error: {e}")
+        return None
+
 def get_all_perpetual_symbols():
     try:
-        f_res = session.get(f"{FUTURES_BASE}/fapi/v1/exchangeInfo", timeout=10)
+        f_res = safe_get(f"{FUTURES_BASE}/fapi/v1/exchangeInfo")
         f_symbols = set()
-        if f_res.status_code == 200:
+        if f_res and f_res.status_code == 200:
             for s in f_res.json().get('symbols', []):
                 if s.get('contractType') == 'PERPETUAL' and s.get('status') == 'TRADING' and s['symbol'].endswith('USDT'):
                     f_symbols.add(s['symbol'])
 
-        s_res = session.get(f"{SPOT_BASE}/api/v3/exchangeInfo", timeout=10)
+        s_res = safe_get(f"{SPOT_BASE}/api/v3/exchangeInfo")
         s_symbols = set()
-        if s_res.status_code == 200:
+        if s_res and s_res.status_code == 200:
             for s in s_res.json().get('symbols', []):
                 if s.get('status') == 'TRADING' and s['symbol'].endswith('USDT'):
                     s_symbols.add(s['symbol'])
@@ -61,8 +72,8 @@ def get_all_perpetual_symbols():
 
 def check_funding_history(symbol):
     try:
-        res = session.get(f"{FUTURES_BASE}/fapi/v1/fundingRate", params={"symbol": symbol, "limit": 3}, timeout=5)
-        if res.status_code == 200:
+        res = safe_get(f"{FUTURES_BASE}/fapi/v1/fundingRate", params={"symbol": symbol, "limit": 3})
+        if res and res.status_code == 200:
             rates = res.json()
             if rates and len(rates) >= 3:
                 past_rates = [float(r['fundingRate']) for r in rates]
@@ -73,12 +84,14 @@ def check_funding_history(symbol):
 
 def calculate_slippage(symbol):
     try:
-        spot_depth = session.get(f"{SPOT_BASE}/api/v3/depth", params={"symbol": symbol, "limit": 5}, timeout=5).json()
-        if 'asks' in spot_depth and spot_depth['asks'] and 'bids' in spot_depth and spot_depth['bids']:
-            best_ask = float(spot_depth['asks'][0][0])
-            best_bid = float(spot_depth['bids'][0][0])
-            spread_pct = ((best_ask - best_bid) / best_ask) * 100
-            return max(0.01, spread_pct / 2.0)
+        res = safe_get(f"{SPOT_BASE}/api/v3/depth", params={"symbol": symbol, "limit": 5})
+        if res and res.status_code == 200:
+            spot_depth = res.json()
+            if 'asks' in spot_depth and spot_depth['asks'] and 'bids' in spot_depth and spot_depth['bids']:
+                best_ask = float(spot_depth['asks'][0][0])
+                best_bid = float(spot_depth['bids'][0][0])
+                spread_pct = ((best_ask - best_bid) / best_ask) * 100
+                return max(0.01, spread_pct / 2.0)
     except Exception:
         pass
     return 0.03
@@ -89,17 +102,21 @@ def scan_and_report_opportunities():
     log_info("="*60)
 
     try:
-        res_prem = session.get(f"{FUTURES_BASE}/fapi/v1/premiumIndex", timeout=10)
+        res_prem = safe_get(f"{FUTURES_BASE}/fapi/v1/premiumIndex")
         
-        if res_prem.status_code != 200:
-            log_info(f"⚠️ Premium Index API ဖတ်ယူ၍ မရပါ။ (Status Code: {res_prem.status_code})")
-            if res_prem.status_code == 418:
-                log_info("⛔ Binance IP Ban (418) ဖြစ်သွားပါသည်။ API Request များကို ၁၀ မိနစ်ခန့် ရပ်နားထားပါမည်...")
-                time.sleep(600)  # 418 တက်ပါက ၁၀ မိနစ် ငြိမ်ပေးမည်
+        if not res_prem or res_prem.status_code != 200:
+            status = res_prem.status_code if res_prem else "No Response"
+            log_info(f"⚠️ Premium Index API ဖတ်ယူ၍ မရပါ။ (Status Code: {status})")
+            if status == 418 or status == 403:
+                log_info("⛔ Render Region ကို Singapore သို့မဟုတ် Frankfurt သို့ ပြောင်းပေးရန် လိုအပ်ပါသည်။")
             return
 
         prem_data = {item['symbol']: item for item in res_prem.json() if isinstance(item, dict)}
-        res_ticker = session.get(f"{FUTURES_BASE}/fapi/v1/ticker/24hr", timeout=10)
+        
+        res_ticker = safe_get(f"{FUTURES_BASE}/fapi/v1/ticker/24hr")
+        if not res_ticker or res_ticker.status_code != 200:
+            return
+            
         ticker_data = {item['symbol']: item for item in res_ticker.json() if isinstance(item, dict)}
 
         all_symbols = get_all_perpetual_symbols()
