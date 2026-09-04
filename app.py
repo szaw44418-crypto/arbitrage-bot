@@ -45,9 +45,9 @@ FUTURES_SECRET_KEY = os.environ.get("FUTURES_SECRET_KEY", "b64gEodONh8DMFPsX7Kaj
 TRADE_AMOUNT_USDT = 60.0
 LEVERAGE = 1  
 
-# 🛡️ UPGRADED SAFETY & STRICT PROFITABILITY THRESHOLDS
-MIN_NET_PROFIT_THRESHOLD = 0.05   # 🎯 အနည်းဆုံး 0.05 % အသားတင်အမြတ်ကျန်မှသာ Trade လုပ်မည် (Basis Risk & Slippage ကာမိရန်)
-MIN_24H_VOLUME_USDT = 50,000      # 💧 Liquidity ကောင်းမွန်သော Coin များကိုသာ သုံးမည် ($50,000+)
+# 🛡️ SAFETY & PROFITABILITY THRESHOLDS
+MIN_NET_PROFIT_THRESHOLD = 0.20   # 🎯 Testnet စမ်းသပ်ရန် 0.20% (Mainnet တွင် 0.45% ထားပါ)
+MIN_24H_VOLUME_USDT = 100000     # 💧 Liquidity Minimum Limit ($100,000+)
 
 def truncate_qty(qty, precision):
     if precision == 0:
@@ -153,7 +153,6 @@ def get_all_perpetual_symbols():
             }
 
         valid_symbols = list(f_symbols.intersection(s_symbols))
-
         if valid_symbols:
             return valid_symbols
 
@@ -184,14 +183,13 @@ def simulate_slippage(symbol, volume_24h):
             spread_pct = ((best_ask - best_bid) / best_ask) * 100
 
             dynamic_slip = max(0.01, spread_pct / 2.0)
-            if volume_24h < 20000:
+            if volume_24h < 20000000:
                 dynamic_slip += 0.02
             return dynamic_slip
     except Exception:
         pass
     return 0.03
 
-# 📊 Robust Execution Price Extraction Helper
 def parse_fill_price(order_res, symbol, market_type="SPOT"):
     try:
         if isinstance(order_res, dict) and 'fills' in order_res and len(order_res['fills']) > 0:
@@ -215,7 +213,7 @@ def parse_fill_price(order_res, symbol, market_type="SPOT"):
     except Exception:
         return 0.0
 
-# 🌟 [HIGH-PROFIT TARGETED MARKET SCANNER]
+# 🌟 [HIGH-PROFIT TARGETED MARKET SCANNER + DIAGNOSTIC LOGS]
 def advanced_market_scanner(target_funding_time):
     log_info("\n🔍 [FULL PIPELINE SCANNING: Checking Upcoming Window Coins...]")
     try:
@@ -234,8 +232,7 @@ def advanced_market_scanner(target_funding_time):
 
         all_symbols = get_all_perpetual_symbols()
         candidates = []
-
-        curr_time = get_futures_server_time()
+        top_rejected = []  # Log တွင် အကြောင်းအရင်း ပြသရန်
 
         for symbol in all_symbols:
             if symbol in prem_data and symbol in ticker_data:
@@ -244,7 +241,6 @@ def advanced_market_scanner(target_funding_time):
 
                 raw_nft = int(p_info.get('nextFundingTime', 0))
                 
-                # 🎯 ရှေ့လာမည့် ၂၀ မိနစ်အတွင်း Funding Fee ပေးရတော့မည့် Coin များကိုသာ သီးသန့်ရွေးချယ်မည်
                 if raw_nft <= 0 or abs(raw_nft - target_funding_time) > 1200000:
                     continue
 
@@ -254,28 +250,27 @@ def advanced_market_scanner(target_funding_time):
                 if volume_24h < MIN_24H_VOLUME_USDT:
                     continue
 
+                estimated_total_fees = 0.16  
+                estimated_slippage = simulate_slippage(symbol, volume_24h)
+                expected_net_profit = funding_rate - (estimated_total_fees + estimated_slippage)
+
+                if expected_net_profit < MIN_NET_PROFIT_THRESHOLD:
+                    top_rejected.append(f"{symbol} (Funding: {funding_rate:.3f}%, Net: {expected_net_profit:.3f}%)")
+                    continue
+
                 if not check_funding_history(symbol):
+                    top_rejected.append(f"{symbol} (Failed Funding History Check)")
                     continue
 
                 oi_res = requests.get(f"{FUTURES_BASE}/fapi/v1/openInterest?symbol={symbol}", timeout=5)
                 open_interest = float(oi_res.json().get('openInterest', 0)) if oi_res.status_code == 200 else 0.0
 
-                estimated_total_fees = 0.16  
-                estimated_slippage = simulate_slippage(symbol, volume_24h)
-
-                expected_net_profit = funding_rate - (estimated_total_fees + estimated_slippage)
-
-                if expected_net_profit < MIN_NET_PROFIT_THRESHOLD:
-                    continue
-
-                vol_score = min(volume_24h / 20000.0, 1.0) * 30
-                oi_score = min(open_interest / 20000.0, 1.0) * 30
+                vol_score = min(volume_24h / 200000000.0, 1.0) * 30
+                oi_score = min(open_interest / 2000000.0, 1.0) * 30
                 profit_score = min(expected_net_profit, 5.0) * 40
                 slippage_penalty = estimated_slippage * 10
 
                 risk_composite_score = vol_score + oi_score + profit_score - slippage_penalty
-
-                funding_interval = 8
 
                 candidates.append({
                     'symbol': symbol,
@@ -284,11 +279,13 @@ def advanced_market_scanner(target_funding_time):
                     'volume_24h': volume_24h,
                     'open_interest': open_interest,
                     'next_funding_time': raw_nft,
-                    'funding_interval': funding_interval,
+                    'funding_interval': 8,
                     'score': risk_composite_score
                 })
 
         if not candidates:
+            if top_rejected:
+                log_info(f"ℹ️ Rejected Top Candidates: {', '.join(top_rejected[:3])}")
             log_info("⚠️ No profit-generating coins met the criteria in this window.")
             return None, 0, 0, 0, 8
 
@@ -349,8 +346,6 @@ def execute_arbitrage(symbol, net_profit, next_funding_time, funding_rate, fundi
     log_info(f"=== [SPOT ORDER EXECUTED] === | Pair: {symbol} | Order ID: {spot_res['orderId']} | Side: BUY")
 
     spot_entry_price = parse_fill_price(spot_res, symbol, "SPOT")
-
-    # ⚡ Balance ချက်ချင်း ရယူခြင်း
     actual_spot_qty = get_spot_balance(symbol)
 
     log_info(f"⏳ Executing Futures SHORT on {symbol}...")
@@ -428,7 +423,7 @@ def close_positions(trade_data):
     exit_time = time.time()
     generate_trade_report(trade_data, spot_exit_price, futures_exit_price, exit_time)
 
-# 📝 [DETAILED TRADING REPORT GENERATOR]
+# 📝 [DETAILED TRADING REPORT GENERATOR - RE-ADDED]
 def generate_trade_report(trade_data, spot_exit_price, futures_exit_price, exit_time):
     now = datetime.now()
     date_str = now.strftime('%Y-%m-%d')
@@ -554,7 +549,7 @@ def start_smart_bot():
             if trade_data:
                 t_funding_time = trade_data['next_funding_time']
                 
-                # 🛡️ Funding အချိန်ပြီးနောက် ၄၅ စက္ကန့်အထိ စောင့်ဆိုင်းပါမည် (Spread စျေးကွက် ပြန်လည်တည်ငြိမ်ပြီးမှ Position ပိတ်ရန်)
+                # 🛡️ Funding အချိန်ပြီးနောက် ၄၅ စက္ကန့်အထိ စောင့်ဆိုင်းမည် (Spread စျေးကွက် ပြန်လည်တည်ငြိမ်မှ ပိတ်ရန်)
                 wait_seconds = ((t_funding_time - get_futures_server_time()) / 1000.0) + 45
 
                 if wait_seconds > 0:
