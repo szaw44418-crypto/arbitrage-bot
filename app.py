@@ -24,13 +24,14 @@ def run_web_server():
 # Web Server ကို Background Thread ဖြင့် Run ခြင်း
 threading.Thread(target=run_web_server, daemon=True).start()
 
-# 📱 Telegram Credentials (Environment Variables သို့မဟုတ် Default Value ဖြင့် ဖတ်ယူမည်)
+# 📱 Telegram Credentials
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q7tQP_v3kNVAyslSYD3FsAWz60").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
 SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
 
-MIN_NET_PROFIT_THRESHOLD = 0.25  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.25%)
-MIN_24H_VOLUME_USDT = 1000000    # အနည်းဆုံး အရောင်းအဝယ် ပမာဏ ($1M+)
+# 🎯 အသစ်ပြင်ဆင်လိုက်သော Filter သတ်မှတ်ချက်များ
+MIN_NET_PROFIT_THRESHOLD = 0.10  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.10% သို့ လျှော့ချထားသည်)
+MIN_24H_VOLUME_USDT = 500000     # အနည်းဆုံး အရောင်းအဝယ် ပမာဏ ($500K သို့ လျှော့ချထားသည်)
 
 # 🌐 Binance Multi-Endpoints (IP Ban/Timeout ကာကွယ်ရန်)
 FUTURES_ENDPOINTS = [
@@ -47,7 +48,6 @@ SPOT_ENDPOINTS = [
     "https://api3.binance.com"
 ]
 
-# Random User-Agent စာရင်း
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
@@ -65,7 +65,6 @@ def get_headers():
     }
 
 def send_telegram_message(message_text):
-    """Telegram ထံ မက်ဆေ့ဂျ် ပို့ပေးသော Function"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         log_info("⚠️ Telegram Credentials မပြည့်စုံပါ။")
         return
@@ -87,7 +86,6 @@ def send_telegram_message(message_text):
         log_info(f"⚠️ Telegram Request Exception: {e}")
 
 def safe_api_get(endpoints, path, params=None):
-    """Backup Server များကို လှည့်ပတ် ခေါ်ယူပေးသော အဆင့်မြင့် Function"""
     time.sleep(0.2)
     for base_url in endpoints:
         url = f"{base_url}{path}"
@@ -116,13 +114,6 @@ def get_all_perpetual_symbols():
 
     valid_symbols = list(f_symbols.intersection(s_symbols))
     return valid_symbols if valid_symbols else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
-
-def check_funding_history(symbol):
-    rates = safe_api_get(FUTURES_ENDPOINTS, "/fapi/v1/fundingRate", params={"symbol": symbol, "limit": 3})
-    if rates and isinstance(rates, list) and len(rates) >= 3:
-        past_rates = [float(r['fundingRate']) for r in rates]
-        return all(r > 0 for r in past_rates)
-    return False
 
 def calculate_slippage(symbol):
     spot_depth = safe_api_get(SPOT_ENDPOINTS, "/api/v3/depth", params={"symbol": symbol, "limit": 5})
@@ -166,6 +157,7 @@ def scan_and_report_opportunities():
                 volume_24h = float(t_info.get('quoteVolume', 0))
                 next_funding_time = int(p_info.get('nextFundingTime', 0))
 
+                # 24h Volume စစ်ဆေးခြင်း
                 if volume_24h < MIN_24H_VOLUME_USDT:
                     continue
 
@@ -176,10 +168,8 @@ def scan_and_report_opportunities():
 
                 expected_net_profit_pct = funding_rate - total_costs_pct
 
+                # Net Profit Margin စစ်ဆေးခြင်း
                 if expected_net_profit_pct < MIN_NET_PROFIT_THRESHOLD:
-                    continue
-
-                if not check_funding_history(symbol):
                     continue
 
                 valid_candidates.append({
@@ -220,7 +210,6 @@ def generate_simulation_report(candidate, rank, capital):
     nft_dt = datetime.fromtimestamp(candidate['next_funding_time'] / 1000.0)
     time_str = nft_dt.strftime('%Y-%m-%d %H:%M:%S')
 
-    # ၁။ Log ထဲသို့ ရိုက်ထုတ်ခြင်း
     log_info(f"==================================================")
     log_info(f"📊 [OPPORTUNITY REPORT #{rank}]: {symbol}")
     log_info(f"==================================================")
@@ -238,7 +227,6 @@ def generate_simulation_report(candidate, rank, capital):
     log_info(f"   • EST. NET PROFIT:     +${net_estimated_profit_usdt:.4f} USDT")
     log_info(f"==================================================\n")
 
-    # ၂။ Telegram သို့ မက်ဆေ့ဂျ် ပို့ခြင်း
     tg_text = (
         f"🚀 <b>ARBITRAGE OPPORTUNITY FOUND #{rank}</b>\n\n"
         f"🪙 <b>Coin:</b> <code>{symbol}</code>\n"
@@ -261,12 +249,11 @@ def start_dry_run_bot():
     log_info("🤖 MAINNET SCANNER & REPORTING BOT STARTED (DRY-RUN MODE)")
     log_info("💡 No orders will be executed. Scanning for profitable funding coins...\n")
 
-    # Bot စတင်သည်နှင့် Telegram သို့ သတိပေးချက် မက်ဆေ့ဂျ် ပို့မည်
     startup_msg = (
-        "🤖 <b>Binance Funding Arbitrage Bot Started!</b>\n\n"
+        "🤖 <b>Binance Funding Arbitrage Bot Updated!</b>\n\n"
         "🟢 Status: Active (Dry-Run Mode)\n"
         "⚡ Multi-Endpoint Engine: Enabled\n"
-        "🔍 Filter Criteria: > $1M Volume & Net Profit > 0.25%\n"
+        "🔍 Filter Criteria: > $500K Volume & Net Profit > 0.10%\n"
         "📡 Scanning for profitable opportunities..."
     )
     send_telegram_message(startup_msg)
