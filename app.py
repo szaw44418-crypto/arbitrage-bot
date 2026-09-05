@@ -29,11 +29,11 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
 SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
 
-# 🎯 အသစ်ပြင်ဆင်လိုက်သော Filter သတ်မှတ်ချက်များ
-MIN_NET_PROFIT_THRESHOLD = 0.01  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.01% သို့ လျှော့ချထားသည်)
-MIN_24H_VOLUME_USDT = 500000     # အနည်းဆုံး အရောင်းအဝယ် ပမာဏ ($500K သို့ လျှော့ချထားသည်)
+# 🎯 Filter သတ်မှတ်ချက်များ
+MIN_NET_PROFIT_THRESHOLD = 0.10  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.10%)
+MIN_24H_VOLUME_USDT = 500000     # အနည်းဆုံး အရောင်းအဝယ် ပမာဏ ($500K)
 
-# 🌐 Binance Multi-Endpoints (IP Ban/Timeout ကာကွယ်ရန်)
+# 🌐 Binance Multi-Endpoints
 FUTURES_ENDPOINTS = [
     "https://fapi.binance.com",
     "https://fapi1.binance.com",
@@ -86,13 +86,15 @@ def send_telegram_message(message_text):
         log_info(f"⚠️ Telegram Request Exception: {e}")
 
 def safe_api_get(endpoints, path, params=None):
-    time.sleep(0.2)
+    time.sleep(0.1)
     for base_url in endpoints:
         url = f"{base_url}{path}"
         try:
             res = session.get(url, params=params, headers=get_headers(), timeout=6)
             if res.status_code == 200:
                 return res.json()
+            elif res.status_code == 429:
+                time.sleep(0.5)
         except requests.exceptions.RequestException:
             continue
     return None
@@ -114,16 +116,6 @@ def get_all_perpetual_symbols():
 
     valid_symbols = list(f_symbols.intersection(s_symbols))
     return valid_symbols if valid_symbols else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
-
-def calculate_slippage(symbol):
-    spot_depth = safe_api_get(SPOT_ENDPOINTS, "/api/v3/depth", params={"symbol": symbol, "limit": 5})
-    if spot_depth and 'asks' in spot_depth and 'bids' in spot_depth:
-        if spot_depth['asks'] and spot_depth['bids']:
-            best_ask = float(spot_depth['asks'][0][0])
-            best_bid = float(spot_depth['bids'][0][0])
-            spread_pct = ((best_ask - best_bid) / best_ask) * 100
-            return max(0.01, spread_pct / 2.0)
-    return 0.03
 
 def scan_and_report_opportunities():
     log_info("\n" + "="*60)
@@ -163,7 +155,7 @@ def scan_and_report_opportunities():
 
                 est_spot_fee_pct = 0.20
                 est_futures_fee_pct = 0.08
-                est_slippage_pct = calculate_slippage(symbol)
+                est_slippage_pct = 0.03  # API Call လျှော့ရန် ပုံသေ Slippage ခန့်မှန်းချက် သုံးထားသည်
                 total_costs_pct = est_spot_fee_pct + est_futures_fee_pct + est_slippage_pct
 
                 expected_net_profit_pct = funding_rate - total_costs_pct
@@ -248,15 +240,6 @@ def generate_simulation_report(candidate, rank, capital):
 def start_dry_run_bot():
     log_info("🤖 MAINNET SCANNER & REPORTING BOT STARTED (DRY-RUN MODE)")
     log_info("💡 No orders will be executed. Scanning for profitable funding coins...\n")
-
-    startup_msg = (
-        "🤖 <b>Binance Funding Arbitrage Bot Updated!</b>\n\n"
-        "🟢 Status: Active (Dry-Run Mode)\n"
-        "⚡ Multi-Endpoint Engine: Enabled\n"
-        "🔍 Filter Criteria: > $500K Volume & Net Profit > 0.10%\n"
-        "📡 Scanning for profitable opportunities..."
-    )
-    send_telegram_message(startup_msg)
 
     while True:
         try:
