@@ -30,7 +30,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
 SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
 
 # 🎯 Filter သတ်မှတ်ချက်များ
-MIN_NET_PROFIT_THRESHOLD = 0.001  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.001%)
+MIN_NET_PROFIT_THRESHOLD = -0.001  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (-0.001%)
 MIN_24H_VOLUME_USDT = 500000     # အနည်းဆုံး အရောင်းအဝယ် ပမာဏ ($500K)
 
 # 🌐 Binance Multi-Endpoints
