@@ -1,6 +1,7 @@
 import os
 import time
 import sys
+import random
 import threading
 import requests
 from datetime import datetime
@@ -20,10 +21,18 @@ def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# Web Server ကို Background Thread ဖြင့် Run ပေးခြင်း
+# Web Server ကို Background Thread ဖြင့် Run ခြင်း
 threading.Thread(target=run_web_server, daemon=True).start()
 
-# 🌐 Binance Multi-Endpoints (IP Ban/Timeout လျှော့ချရန် Backup Server များ)
+# 📱 Telegram Credentials (Environment Variables သို့မဟုတ် Default Value ဖြင့် ဖတ်ယူမည်)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q7tQP_v3kNVAyslSYD3FsAWz60").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
+SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
+
+MIN_NET_PROFIT_THRESHOLD = 0.25  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.25%)
+MIN_24H_VOLUME_USDT = 1000000    # အနည်းဆုံး အရောင်းအဝယ် ပမာဏ ($1M+)
+
+# 🌐 Binance Multi-Endpoints (IP Ban/Timeout ကာကွယ်ရန်)
 FUTURES_ENDPOINTS = [
     "https://fapi.binance.com",
     "https://fapi1.binance.com",
@@ -38,35 +47,56 @@ SPOT_ENDPOINTS = [
     "https://api3.binance.com"
 ]
 
-# Session နှင့် HTTP Headers သတ်မှတ်ခြင်း
-session = requests.Session()
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': 'application/json',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Cache-Control': 'no-cache'
-})
+# Random User-Agent စာရင်း
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+]
 
-SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
-MIN_NET_PROFIT_THRESHOLD = 0.25
-MIN_24H_VOLUME_USDT = 1000000
+session = requests.Session()
+
+def get_headers():
+    return {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache'
+    }
+
+def send_telegram_message(message_text):
+    """Telegram ထံ မက်ဆေ့ဂျ် ပို့ပေးသော Function"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        log_info("⚠️ Telegram Credentials မပြည့်စုံပါ။")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message_text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=8)
+        if res.status_code == 200:
+            log_info("📲 Telegram Notification ပို့ဆောင်ပြီးပါပြီ။")
+        else:
+            log_info(f"⚠️ Telegram Error (Status Code: {res.status_code})")
+    except Exception as e:
+        log_info(f"⚠️ Telegram Request Exception: {e}")
 
 def safe_api_get(endpoints, path, params=None):
-    """
-    Backup Endpoints များကို လှည့်ပတ်ခေါ်ယူပေးသော အဆင့်မြင့် Function။
-    Server တစ်ခု မရပါက နောက်တစ်ခုသို့ အလိုအလျောက် ပြောင်းလဲခေါ်ယူသည်။
-    """
-    time.sleep(0.3)  # Rate Limit မမိစေရန် အနည်းငယ် စောင့်ခြင်း
+    """Backup Server များကို လှည့်ပတ် ခေါ်ယူပေးသော အဆင့်မြင့် Function"""
+    time.sleep(0.2)
     for base_url in endpoints:
         url = f"{base_url}{path}"
         try:
-            res = session.get(url, params=params, timeout=6)
+            res = session.get(url, params=params, headers=get_headers(), timeout=6)
             if res.status_code == 200:
                 return res.json()
-            elif res.status_code in [418, 403, 429]:
-                log_info(f"⚠️ Endpoint {base_url} IP Restricted/Rate Limited (Status: {res.status_code}). Trying next...")
         except requests.exceptions.RequestException:
-            continue  # Connection Error/Timeout ဖြစ်ပါက နောက် Endpoint သို့ ကူးမည်
+            continue
     return None
 
 def get_all_perpetual_symbols():
@@ -112,7 +142,7 @@ def scan_and_report_opportunities():
     try:
         prem_list = safe_api_get(FUTURES_ENDPOINTS, "/fapi/v1/premiumIndex")
         if not prem_list or not isinstance(prem_list, list):
-            log_info("⚠️ Premium Index Data ရယူ၍ မရပါ။ Endpoints အားလုံး Timeout သို့မဟုတ် Block ဖြစ်နေပါသည်။")
+            log_info("⚠️ Premium Index Data ရယူ၍ မရပါ။")
             return
 
         prem_data = {item['symbol']: item for item in prem_list if isinstance(item, dict)}
@@ -190,6 +220,7 @@ def generate_simulation_report(candidate, rank, capital):
     nft_dt = datetime.fromtimestamp(candidate['next_funding_time'] / 1000.0)
     time_str = nft_dt.strftime('%Y-%m-%d %H:%M:%S')
 
+    # ၁။ Log ထဲသို့ ရိုက်ထုတ်ခြင်း
     log_info(f"==================================================")
     log_info(f"📊 [OPPORTUNITY REPORT #{rank}]: {symbol}")
     log_info(f"==================================================")
@@ -207,9 +238,38 @@ def generate_simulation_report(candidate, rank, capital):
     log_info(f"   • EST. NET PROFIT:     +${net_estimated_profit_usdt:.4f} USDT")
     log_info(f"==================================================\n")
 
+    # ၂။ Telegram သို့ မက်ဆေ့ဂျ် ပို့ခြင်း
+    tg_text = (
+        f"🚀 <b>ARBITRAGE OPPORTUNITY FOUND #{rank}</b>\n\n"
+        f"🪙 <b>Coin:</b> <code>{symbol}</code>\n"
+        f"🔹 <b>Mark Price:</b> {mark_price:.4f} USDT\n"
+        f"🔹 <b>24h Volume:</b> ${volume:,.2f} USDT\n"
+        f"⏰ <b>Next Funding:</b> {time_str}\n"
+        f"-----------------------------------\n"
+        f"📈 <b>Funding Rate:</b> <code>{funding_rate:+.4f}%</code>\n"
+        f"💸 <b>Total Fees & Slippage:</b> <code>{total_costs_pct:.4f}%</code>\n"
+        f"🎯 <b>EST. NET PROFIT MARGIN:</b> <code>{net_profit_pct:+.4f}%</code>\n"
+        f"-----------------------------------\n"
+        f"💵 <b>ESTIMATED P&L (${capital:.0f} Capital):</b>\n"
+        f"• Gross Income: +${gross_funding_revenue:.4f} USDT\n"
+        f"• Trading Costs: -${estimated_total_cost:.4f} USDT\n"
+        f"🔥 <b>NET PROFIT: +${net_estimated_profit_usdt:.4f} USDT</b>"
+    )
+    send_telegram_message(tg_text)
+
 def start_dry_run_bot():
     log_info("🤖 MAINNET SCANNER & REPORTING BOT STARTED (DRY-RUN MODE)")
     log_info("💡 No orders will be executed. Scanning for profitable funding coins...\n")
+
+    # Bot စတင်သည်နှင့် Telegram သို့ သတိပေးချက် မက်ဆေ့ဂျ် ပို့မည်
+    startup_msg = (
+        "🤖 <b>Binance Funding Arbitrage Bot Started!</b>\n\n"
+        "🟢 Status: Active (Dry-Run Mode)\n"
+        "⚡ Multi-Endpoint Engine: Enabled\n"
+        "🔍 Filter Criteria: > $1M Volume & Net Profit > 0.25%\n"
+        "📡 Scanning for profitable opportunities..."
+    )
+    send_telegram_message(startup_msg)
 
     while True:
         try:
