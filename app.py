@@ -31,7 +31,7 @@ SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
 
 # 🎯 အဆင့်မြှင့်တင်ထားသော Filter & Safety သတ်မှတ်ချက်များ
 MIN_NET_PROFIT_THRESHOLD = 0.30  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.30% သို့ မြှင့်ထားသည်)
-MIN_24H_VOLUME_USDT = 2000000    # Slippage / Volatility နည်းစေရန် အနည်းဆုံး Volume $2M ($2,000,000) သတ်မှတ်ထားသည်
+MIN_24H_VOLUME_USDT = 20000    # Slippage / Volatility နည်းစေရန် အနည်းဆုံး Volume $20K ($20,000) သတ်မှတ်ထားသည်
 
 # 🌐 Binance Multi-Endpoints (IP Limit & Rate Limit ကာကွယ်ရန်)
 FUTURES_ENDPOINTS = [
