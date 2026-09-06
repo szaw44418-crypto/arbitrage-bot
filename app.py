@@ -29,9 +29,9 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
 SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
 
-# 🎯 Filter သတ်မှတ်ချက်များ (Telegram Alert စမ်းသပ်ရန် Threshold ကို -0.25 အဖြစ် ပြင်ထားသည်)
-MIN_NET_PROFIT_THRESHOLD = -0.25  # ပုံမှန် Funding Rate (+0.01% မှ +0.05%) ရှိသော Coin များ စမ်းသပ်မိစေရန်
-MIN_24H_VOLUME_USDT = 20000      # 24h Volume ($20,000)
+# 🎯 Filter သတ်မှတ်ချက်များ (TEST MODE: Filter ကို အပြည့်အဝ ဖြေလျှော့ထားသည်)
+MIN_NET_PROFIT_THRESHOLD = -10.0  # Telegram Alert စမ်းသပ်ရန် Threshold ကို ပိတ်ထားသည်
+MIN_24H_VOLUME_USDT = 20000       # 24h Volume ($20,000)
 
 # 🌐 Binance Multi-Endpoints
 FUTURES_ENDPOINTS = [
@@ -149,7 +149,7 @@ def scan_and_report_opportunities():
                 volume_24h = float(t_info.get('quoteVolume', 0))
                 next_funding_time = int(p_info.get('nextFundingTime', 0))
 
-                # 1. 24h Volume စစ်ဆေးခြင်း ($20K အထက်)
+                # 24h Volume စစ်ဆေးခြင်း ($20K အထက်)
                 if volume_24h < MIN_24H_VOLUME_USDT:
                     continue
 
@@ -159,10 +159,6 @@ def scan_and_report_opportunities():
                 total_costs_pct = est_spot_fee_pct + est_futures_fee_pct + est_slippage_pct
 
                 expected_net_profit_pct = funding_rate - total_costs_pct
-
-                # 2. Net Profit Margin စစ်ဆေးခြင်း (-0.25% အထက်)
-                if expected_net_profit_pct < MIN_NET_PROFIT_THRESHOLD:
-                    continue
 
                 valid_candidates.append({
                     'symbol': symbol,
@@ -178,10 +174,11 @@ def scan_and_report_opportunities():
             log_info("ℹ️ လက်ရှိအချိန်တွင် သတ်မှတ်ချက်ပြည့်မီသော Coin မတွေ့ရှိသေးပါ။")
             return
 
-        valid_candidates.sort(key=lambda x: x['net_profit_pct'], reverse=True)
-        log_info(f"🎯 သတ်မှတ်ချက် ပြည့်မီသော Coin ({len(valid_candidates)}) မျိုး ရှာဖွေတွေ့ရှိခဲ့သည်:\n")
+        # Funding Rate / Net Profit အများဆုံး Coin များကို အစဉ်လိုက် စီစဉ်ခြင်း
+        valid_candidates.sort(key=lambda x: x['funding_rate'], reverse=True)
+        log_info(f"🎯 စစ်ဆေးတွေ့ရှိသော Coin စုစုပေါင်း ({len(valid_candidates)}) မျိုးမှ ထိပ်ဆုံး ၃ ခုကို Telegram ပို့ပေးပါမည်:\n")
 
-        # စမ်းသပ်ချက်ဖြစ်၍ Telegram သို့ မက်ဆေ့ဂျ် အများအပြား မဝင်စေရန် အမြင့်ဆုံး ၃ ခုသာ ပို့ပေးပါမည်
+        # ထိပ်ဆုံး Funding Rate အများဆုံး ၃ ခုကို Telegram သို့ ပို့ပေးမည်
         for idx, candidate in enumerate(valid_candidates[:3], 1):
             generate_simulation_report(candidate, idx, SIMULATED_CAPITAL_USDT)
 
@@ -223,7 +220,7 @@ def generate_simulation_report(candidate, rank, capital):
     log_info(f"==================================================\n")
 
     tg_text = (
-        f"🚀 <b>DELTA-NEUTRAL ARBITRAGE FOUND #{rank}</b>\n\n"
+        f"🚀 <b>DELTA-NEUTRAL ARBITRAGE SCANNER #{rank}</b>\n\n"
         f"🪙 <b>Coin:</b> <code>{symbol}</code>\n"
         f"🔹 <b>Mark Price:</b> {mark_price:.4f} USDT\n"
         f"🔹 <b>24h Volume:</b> ${volume:,.2f} USDT\n"
@@ -246,8 +243,8 @@ def generate_simulation_report(candidate, rank, capital):
     send_telegram_message(tg_text)
 
 def start_dry_run_bot():
-    log_info("🤖 MAINNET SCANNER & REPORTING BOT STARTED (DRY-RUN MODE)")
-    log_info("💡 Volume > $20K & Net Profit Threshold = -0.25% (TEST MODE Active)...\n")
+    log_info("🤖 MAINNET SCANNER & REPORTING BOT STARTED (FORCE-TEST MODE)")
+    log_info("💡 Scanning Market & Sending Top 3 Pairs to Telegram...\n")
 
     while True:
         try:
