@@ -29,11 +29,11 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
 SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
 
-# 🎯 Filter သတ်မှတ်ချက်များ
-MIN_NET_PROFIT_THRESHOLD = -0.001  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (-0.001%)
-MIN_24H_VOLUME_USDT = 500000     # အနည်းဆုံး အရောင်းအဝယ် ပမာဏ ($500K)
+# 🎯 အဆင့်မြှင့်တင်ထားသော Filter & Safety သတ်မှတ်ချက်များ
+MIN_NET_PROFIT_THRESHOLD = 0.30  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.30% သို့ မြှင့်ထားသည်)
+MIN_24H_VOLUME_USDT = 2000000    # Slippage / Volatility နည်းစေရန် အနည်းဆုံး Volume $2M ($2,000,000) သတ်မှတ်ထားသည်
 
-# 🌐 Binance Multi-Endpoints
+# 🌐 Binance Multi-Endpoints (IP Limit & Rate Limit ကာကွယ်ရန်)
 FUTURES_ENDPOINTS = [
     "https://fapi.binance.com",
     "https://fapi1.binance.com",
@@ -149,18 +149,18 @@ def scan_and_report_opportunities():
                 volume_24h = float(t_info.get('quoteVolume', 0))
                 next_funding_time = int(p_info.get('nextFundingTime', 0))
 
-                # 24h Volume စစ်ဆေးခြင်း
+                # 1. 24h Volume စစ်ဆေးခြင်း ($2M အထက်)
                 if volume_24h < MIN_24H_VOLUME_USDT:
                     continue
 
                 est_spot_fee_pct = 0.20
                 est_futures_fee_pct = 0.08
-                est_slippage_pct = 0.03  # API Call လျှော့ရန် ပုံသေ Slippage ခန့်မှန်းချက် သုံးထားသည်
+                est_slippage_pct = 0.03  # Safety buffer slippage
                 total_costs_pct = est_spot_fee_pct + est_futures_fee_pct + est_slippage_pct
 
                 expected_net_profit_pct = funding_rate - total_costs_pct
 
-                # Net Profit Margin စစ်ဆေးခြင်း
+                # 2. Net Profit Margin စစ်ဆေးခြင်း (0.30% အထက်)
                 if expected_net_profit_pct < MIN_NET_PROFIT_THRESHOLD:
                     continue
 
@@ -202,8 +202,11 @@ def generate_simulation_report(candidate, rank, capital):
     nft_dt = datetime.fromtimestamp(candidate['next_funding_time'] / 1000.0)
     time_str = nft_dt.strftime('%Y-%m-%d %H:%M:%S')
 
+    # Spot Base Currency Name
+    base_asset = symbol.replace("USDT", "")
+
     log_info(f"==================================================")
-    log_info(f"📊 [OPPORTUNITY REPORT #{rank}]: {symbol}")
+    log_info(f"📊 [SAFE ARBITRAGE OPPORTUNITY #{rank}]: {symbol}")
     log_info(f"==================================================")
     log_info(f"🔹 Mark Price: {mark_price:.4f} USDT")
     log_info(f"🔹 24h Volume: ${volume:,.2f} USDT")
@@ -213,17 +216,17 @@ def generate_simulation_report(candidate, rank, capital):
     log_info(f"💸 Est. Total Fees & Slippage: {total_costs_pct:.4f}%")
     log_info(f"🎯 EST. NET PROFIT MARGIN: {net_profit_pct:+.4f}%")
     log_info(f"--------------------------------------------------")
-    log_info(f"💵 [SIMULATED P&L WITH ${capital:.0f} CAPITAL]:")
+    log_info(f"💵 [ESTIMATED P&L WITH ${capital:.0f} CAPITAL]:")
     log_info(f"   • Gross Funding Income: +${gross_funding_revenue:.4f} USDT")
     log_info(f"   • Est. Trading Costs:  -${estimated_total_cost:.4f} USDT")
     log_info(f"   • EST. NET PROFIT:     +${net_estimated_profit_usdt:.4f} USDT")
     log_info(f"==================================================\n")
 
     tg_text = (
-        f"🚀 <b>ARBITRAGE OPPORTUNITY FOUND #{rank}</b>\n\n"
+        f"🚀 <b>DELTA-NEUTRAL ARBITRAGE FOUND #{rank}</b>\n\n"
         f"🪙 <b>Coin:</b> <code>{symbol}</code>\n"
         f"🔹 <b>Mark Price:</b> {mark_price:.4f} USDT\n"
-        f"🔹 <b>24h Volume:</b> ${volume:,.2f} USDT\n"
+        f"🔹 <b>24h Volume:</b> ${volume:,.2f} USDT (High Liquidity)\n"
         f"⏰ <b>Next Funding:</b> {time_str}\n"
         f"-----------------------------------\n"
         f"📈 <b>Funding Rate:</b> <code>{funding_rate:+.4f}%</code>\n"
@@ -232,14 +235,19 @@ def generate_simulation_report(candidate, rank, capital):
         f"-----------------------------------\n"
         f"💵 <b>ESTIMATED P&L (${capital:.0f} Capital):</b>\n"
         f"• Gross Income: +${gross_funding_revenue:.4f} USDT\n"
-        f"• Trading Costs: -${estimated_total_cost:.4f} USDT\n"
-        f"🔥 <b>NET PROFIT: +${net_estimated_profit_usdt:.4f} USDT</b>"
+        f"• Total Costs: -${estimated_total_cost:.4f} USDT\n"
+        f"🔥 <b>NET PROFIT: +${net_estimated_profit_usdt:.4f} USDT</b>\n"
+        f"-----------------------------------\n"
+        f"🛡️ <b>EXECUTION STRATEGY (Delta-Neutral):</b>\n"
+        f"1. <b>Spot:</b> Buy ${capital:.0f} worth of <code>{base_asset}</code>\n"
+        f"2. <b>Futures:</b> Short 1x <code>{symbol}</code> with ${capital:.0f}\n"
+        f"⚠️ <i>Do NOT open Futures Short alone without Spot Hedge!</i>"
     )
     send_telegram_message(tg_text)
 
 def start_dry_run_bot():
     log_info("🤖 MAINNET SCANNER & REPORTING BOT STARTED (DRY-RUN MODE)")
-    log_info("💡 No orders will be executed. Scanning for profitable funding coins...\n")
+    log_info("💡 Volume > $2M & Net Profit > 0.30% Filters Active...\n")
 
     while True:
         try:
