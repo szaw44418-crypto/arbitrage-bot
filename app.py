@@ -29,9 +29,9 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
 SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
 
-# 🎯 အဆင့်မြှင့်တင်ထားသော Filter & Safety သတ်မှတ်ချက်များ
-MIN_NET_PROFIT_THRESHOLD = 0.30  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.30% သို့ မြှင့်ထားသည်)
-MIN_24H_VOLUME_USDT = 20000    # Slippage / Volatility နည်းစေရန် အနည်းဆုံး Volume $20K ($20,000) သတ်မှတ်ထားသည်
+# 🎯 Filter သတ်မှတ်ချက်များ
+MIN_NET_PROFIT_THRESHOLD = 0.30  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.30%)
+MIN_24H_VOLUME_USDT = 20000      # တောင်းဆိုချက်အရ 24h Volume ကို $20,000 သို့ လျှော့ချထားပါသည်
 
 # 🌐 Binance Multi-Endpoints (IP Limit & Rate Limit ကာကွယ်ရန်)
 FUTURES_ENDPOINTS = [
@@ -149,13 +149,13 @@ def scan_and_report_opportunities():
                 volume_24h = float(t_info.get('quoteVolume', 0))
                 next_funding_time = int(p_info.get('nextFundingTime', 0))
 
-                # 1. 24h Volume စစ်ဆေးခြင်း ($2M အထက်)
+                # 1. 24h Volume စစ်ဆေးခြင်း ($20K အထက်)
                 if volume_24h < MIN_24H_VOLUME_USDT:
                     continue
 
                 est_spot_fee_pct = 0.20
                 est_futures_fee_pct = 0.08
-                est_slippage_pct = 0.03  # Safety buffer slippage
+                est_slippage_pct = 0.03
                 total_costs_pct = est_spot_fee_pct + est_futures_fee_pct + est_slippage_pct
 
                 expected_net_profit_pct = funding_rate - total_costs_pct
@@ -202,11 +202,10 @@ def generate_simulation_report(candidate, rank, capital):
     nft_dt = datetime.fromtimestamp(candidate['next_funding_time'] / 1000.0)
     time_str = nft_dt.strftime('%Y-%m-%d %H:%M:%S')
 
-    # Spot Base Currency Name
     base_asset = symbol.replace("USDT", "")
 
     log_info(f"==================================================")
-    log_info(f"📊 [SAFE ARBITRAGE OPPORTUNITY #{rank}]: {symbol}")
+    log_info(f"📊 [ARBITRAGE OPPORTUNITY #{rank}]: {symbol}")
     log_info(f"==================================================")
     log_info(f"🔹 Mark Price: {mark_price:.4f} USDT")
     log_info(f"🔹 24h Volume: ${volume:,.2f} USDT")
@@ -226,7 +225,7 @@ def generate_simulation_report(candidate, rank, capital):
         f"🚀 <b>DELTA-NEUTRAL ARBITRAGE FOUND #{rank}</b>\n\n"
         f"🪙 <b>Coin:</b> <code>{symbol}</code>\n"
         f"🔹 <b>Mark Price:</b> {mark_price:.4f} USDT\n"
-        f"🔹 <b>24h Volume:</b> ${volume:,.2f} USDT (High Liquidity)\n"
+        f"🔹 <b>24h Volume:</b> ${volume:,.2f} USDT\n"
         f"⏰ <b>Next Funding:</b> {time_str}\n"
         f"-----------------------------------\n"
         f"📈 <b>Funding Rate:</b> <code>{funding_rate:+.4f}%</code>\n"
@@ -247,7 +246,7 @@ def generate_simulation_report(candidate, rank, capital):
 
 def start_dry_run_bot():
     log_info("🤖 MAINNET SCANNER & REPORTING BOT STARTED (DRY-RUN MODE)")
-    log_info("💡 Volume > $2M & Net Profit > 0.30% Filters Active...\n")
+    log_info("💡 Volume > $20K & Net Profit > 0.30% Filters Active...\n")
 
     while True:
         try:
