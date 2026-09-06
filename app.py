@@ -30,10 +30,10 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
 SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
 
 # 🎯 Filter သတ်မှတ်ချက်များ
-MIN_NET_PROFIT_THRESHOLD = 0.30  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.30%)
-MIN_24H_VOLUME_USDT = 20000      # တောင်းဆိုချက်အရ 24h Volume ကို $20,000 သို့ လျှော့ချထားပါသည်
+MIN_NET_PROFIT_THRESHOLD = 0.05  # အနည်းဆုံး အသားတင် အမြတ် ရာခိုင်နှုန်း (0.05% သို့ လျှော့ချထားသည်)
+MIN_24H_VOLUME_USDT = 20000      # 24h Volume ($20,000)
 
-# 🌐 Binance Multi-Endpoints (IP Limit & Rate Limit ကာကွယ်ရန်)
+# 🌐 Binance Multi-Endpoints
 FUTURES_ENDPOINTS = [
     "https://fapi.binance.com",
     "https://fapi1.binance.com",
@@ -160,7 +160,7 @@ def scan_and_report_opportunities():
 
                 expected_net_profit_pct = funding_rate - total_costs_pct
 
-                # 2. Net Profit Margin စစ်ဆေးခြင်း (0.30% အထက်)
+                # 2. Net Profit Margin စစ်ဆေးခြင်း (0.05% အထက်)
                 if expected_net_profit_pct < MIN_NET_PROFIT_THRESHOLD:
                     continue
 
@@ -246,7 +246,7 @@ def generate_simulation_report(candidate, rank, capital):
 
 def start_dry_run_bot():
     log_info("🤖 MAINNET SCANNER & REPORTING BOT STARTED (DRY-RUN MODE)")
-    log_info("💡 Volume > $20K & Net Profit > 0.30% Filters Active...\n")
+    log_info("💡 Volume > $20K & Net Profit > 0.05% Filters Active...\n")
 
     while True:
         try:
