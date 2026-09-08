@@ -20,13 +20,9 @@ def home():
 # 2. Binance & Telegram Credentials Configuration
 # ---------------------------------------------------------
 SPOT_BASE = "https://testnet.binance.vision"
-FUTURES_BASE = "https://demo-fapi.binance.com"
 
 SPOT_API_KEY = os.environ.get("SPOT_API_KEY", "EGMDZzNYcF8aHKsKGxWurbK63sLFdKA42cDEZC3zd8IPkyD3JDEH7btCt4D34aWV")
 SPOT_SECRET_KEY = os.environ.get("SPOT_SECRET_KEY", "YfGOumNKz4MMbZ9MBy7aMB3R6CWxSjVljJvreup8k3BGL5pi1pqc73ieCpOghM8R")
-
-FUTURES_API_KEY = os.environ.get("FUTURES_API_KEY", "TGSwnTW3ukJ7z8fXKeZd4Iz6MBttW6bRA2ODX5rwXC90YWsv5srgcwcL7Bl8XQeA")
-FUTURES_SECRET_KEY = os.environ.get("FUTURES_SECRET_KEY", "b64gEodONh8DMFPsX7Kaj1QRhGdgRM8iCYy8gVPVAO8VNAzWL88DmvZhrVE330Ed")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q7tQP_v3kNVAyslSYD3FsAWz60").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
@@ -36,7 +32,7 @@ client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
 client.API_URL = f"{SPOT_BASE}/api"
 
 # ---------------------------------------------------------
-# 3. Telegram Helper Function
+# 3. Helper Functions (Telegram & Time Sync)
 # ---------------------------------------------------------
 def send_telegram(message):
     """Telegram သို့ အကြောင်းကြားစာ ပို့ပေးသည့် Function"""
@@ -52,8 +48,17 @@ def send_telegram(message):
         except Exception as e:
             print(f"Telegram Sending Error: {e}")
 
+def sync_server_time():
+    """Binance Server နှင့် Local Time ကွာဟချက်ကို ညှိပေးသည် (-1021 Error ကာကွယ်ရန်)"""
+    try:
+        server_time = client.get_server_time()
+        local_time = int(time.time() * 1000)
+        client.TIMESTAMP_OFFSET = server_time['serverTime'] - local_time
+    except Exception as e:
+        print(f"Time Sync Error: {e}")
+
 # ---------------------------------------------------------
-# 4. LOT_SIZE Precision Helper Functions (-1013 Error ပြင်ဆင်ရန်)
+# 4. LOT_SIZE Precision Helper Function (-1013 Error ပြင်ဆင်ရန်)
 # ---------------------------------------------------------
 symbol_info_cache = {}
 
@@ -94,17 +99,22 @@ def format_quantity(symbol, quantity):
 # ---------------------------------------------------------
 def run_arbitrage_bot():
     print("Starting Binance Spot Arbitrage Bot...")
-    send_telegram("🚀 *Binance Arbitrage Bot (Testnet) စတင်လည်ပတ်နေပါပြီ။*")
+    sync_server_time()
+    send_telegram("🚀 *Binance Arbitrage Bot (Testnet - Real Cash Mode) စတင်လည်ပတ်နေပါပြီ။*\n• Per-Trade Capital: `100.00 USDT`")
     
-    MIN_PROFIT_THRESHOLD = 0.1  # အမြတ် ၁ ခေါက်လျှင် အနည်းဆုံး 0.1 USDT ရမှ အလုပ်လုပ်မည်
+    TRADE_CAPITAL = 100.0      # Trade တစ်ကြိမ်လျှင် သုံးမည့် USDT ပမာဏ
+    FEE_FACTOR = 0.999         # Binance Spot Fee 0.1% (Trade တိုင်းအတွက် 99.9% သာကျန်မည်)
+    MIN_PROFIT_THRESHOLD = 0.05 # Fee နှုတ်ပြီး အနည်းဆုံး 0.05 USDT မြတ်မှ လုပ်မည်
 
     while True:
         try:
-            usdt_balance = float(client.get_asset_balance(asset='USDT')['free'])
-            print(f"\nCurrent USDT Balance: {usdt_balance:.2f}")
+            sync_server_time()
+            total_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
+            print(f"\nCurrent Total USDT Balance: {total_usdt_balance:.2f}")
 
-            if usdt_balance < 10:
-                print("USDT Balance နည်းလွန်းသဖြင့် ခဏစောင့်ဆိုင်းနေပါသည်...")
+            # USDT Balance ၁၀၀ အောက် နည်းနေပါက ခဏစောင့်မည်
+            if total_usdt_balance < TRADE_CAPITAL:
+                print(f"USDT Balance မလုံလောက်ပါ။ (အနည်းဆုံး {TRADE_CAPITAL} USDT လိုအပ်ပါသည်)")
                 time.sleep(10)
                 continue
 
@@ -120,44 +130,72 @@ def run_arbitrage_bot():
                     ticker_cross = float(client.get_symbol_ticker(symbol=t['cross'])['price'])
                     ticker_exit = float(client.get_symbol_ticker(symbol=t['exit'])['price'])
 
-                    # Leg 1, 2, 3 Trade Quantity များ တွက်ချက်ခြင်း
-                    raw_q1 = usdt_balance / ticker_base
+                    # Fee (0.1%) ပါ ထည့်သွင်းတွက်ချက်သော Real Cash Net Estimate
+                    raw_q1 = TRADE_CAPITAL / ticker_base
                     q1 = format_quantity(t['base'], raw_q1)
+                    q1_after_fee = q1 * FEE_FACTOR
 
-                    raw_q2 = q1 / ticker_cross
+                    raw_q2 = q1_after_fee / ticker_cross
                     q2 = format_quantity(t['cross'], raw_q2)
+                    q2_after_fee = q2 * FEE_FACTOR
 
-                    estimated_usdt_back = q2 * ticker_exit
-                    potential_profit = estimated_usdt_back - usdt_balance
+                    estimated_usdt_back = (q2_after_fee * ticker_exit) * FEE_FACTOR
+                    potential_profit = estimated_usdt_back - TRADE_CAPITAL
 
-                    print(f"Verifying: USDT -> {t['coin1']} -> {t['coin2']}")
+                    print(f"Checking Path: USDT -> {t['coin1']} -> {t['coin2']} | Net Est. Profit: {potential_profit:.4f} USDT")
 
+                    # အမြတ်ရှိပါက Trade ကို စတင်မည်
                     if potential_profit > MIN_PROFIT_THRESHOLD:
-                        alert_msg = f"⚡ *Arbitrage Opportunity Found!*\nExpected Profit: `{potential_profit:.4f} USDT`"
-                        print(alert_msg)
-                        send_telegram(alert_msg)
+                        start_time = time.time()
+                        initial_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
 
-                        # Leg 1: BUY Base (BTCUSDT)
-                        order1 = client.create_order(symbol=t['base'], side='BUY', type='MARKET', quantity=q1)
-                        print(f"[Leg 1] BUY {t['base']} Volume: {q1}")
+                        print(f"⚡ Arbitrage Opportunity Found! Expected Net Profit: {potential_profit:.4f} USDT")
 
-                        # Leg 2: BUY Cross (BNBBTC)
-                        executed_coin1 = float(client.get_asset_balance(asset=t['coin1'])['free'])
-                        q2_formatted = format_quantity(t['cross'], executed_coin1 / ticker_cross)
-                        order2 = client.create_order(symbol=t['cross'], side='BUY', type='MARKET', quantity=q2_formatted)
-                        print(f"[Leg 2] BUY {t['cross']} Volume: {q2_formatted}")
+                        # Leg 1: BUY Base Coin (eg. BTCUSDT)
+                        order1 = client.create_order(symbol=t['base'], side='BUY', type='MARKET', quantity=q1, recvWindow=60000)
+                        print(f"[Leg 1] Executed BUY {t['base']} Qty: {q1}")
 
-                        # Leg 3: SELL Exit (BNBUSDT)
-                        executed_coin2 = float(client.get_asset_balance(asset=t['coin2'])['free'])
-                        q3_formatted = format_quantity(t['exit'], executed_coin2)
-                        order3 = client.create_order(symbol=t['exit'], side='SELL', type='MARKET', quantity=q3_formatted)
-                        print(f"[Leg 3] SELL {t['exit']} Volume: {q3_formatted}")
+                        # Leg 2: BUY Cross Coin (eg. BNBBTC) - အမှန်တကယ် လက်ကျန်ရှိသော Coin1 Balance ဖြင့် ဝယ်မည်
+                        time.sleep(0.2)
+                        actual_coin1_bal = float(client.get_asset_balance(asset=t['coin1'], recvWindow=60000)['free'])
+                        q2_formatted = format_quantity(t['cross'], actual_coin1_bal / ticker_cross)
+                        order2 = client.create_order(symbol=t['cross'], side='BUY', type='MARKET', quantity=q2_formatted, recvWindow=60000)
+                        print(f"[Leg 2] Executed BUY {t['cross']} Qty: {q2_formatted}")
 
-                        success_msg = f"✅ *Arbitrage Executed Successfully!*\nPair: USDT -> {t['coin1']} -> {t['coin2']}\nProfit: `{potential_profit:.4f} USDT`"
-                        send_telegram(success_msg)
+                        # Leg 3: SELL Exit Coin (eg. BNBUSDT) - အမှန်တကယ် လက်ကျန်ရှိသော Coin2 Balance ကို ရောင်းမည်
+                        time.sleep(0.2)
+                        actual_coin2_bal = float(client.get_asset_balance(asset=t['coin2'], recvWindow=60000)['free'])
+                        q3_formatted = format_quantity(t['exit'], actual_coin2_bal)
+                        order3 = client.create_order(symbol=t['exit'], side='SELL', type='MARKET', quantity=q3_formatted, recvWindow=60000)
+                        print(f"[Leg 3] Executed SELL {t['exit']} Qty: {q3_formatted}")
+
+                        # Cycle ပြီးဆုံးချိန် အကဲဖြတ်ခြင်းနှင့် စာရင်းစစ်ခြင်း
+                        time.sleep(0.5)
+                        end_time = time.time()
+                        final_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
+                        
+                        realized_profit = final_usdt_balance - initial_usdt_balance
+                        profit_percentage = (realized_profit / TRADE_CAPITAL) * 100
+                        duration = end_time - start_time
+
+                        # Telegram သို့ Detailed Cycle Report ထုတ်ပေးခြင်း
+                        report_msg = (
+                            f"📊 *Arbitrage Cycle Summary Report*\n"
+                            f"----------------------------------\n"
+                            f"🔄 *Trade Path:* `USDT ➔ {t['coin1']} ➔ {t['coin2']} ➔ USDT`\n"
+                            f"💰 *Capital Used:* `{TRADE_CAPITAL:.2f} USDT`\n"
+                            f"📈 *Expected Profit:* `+{potential_profit:.4f} USDT`\n"
+                            f"💵 *Actual Net Profit:* `{realized_profit:+.4f} USDT` ({profit_percentage:+.2f}%)\n"
+                            f"🏦 *New Total Balance:* `{final_usdt_balance:.2f} USDT`\n"
+                            f"⏱ *Execution Time:* `{duration:.2f} seconds`\n"
+                            f"----------------------------------\n"
+                            f"✅ *Cycle Finished Successfully!*"
+                        )
+                        print(report_msg)
+                        send_telegram(report_msg)
 
                     else:
-                        print(f"No arbitrage opportunity: {potential_profit:.4f} USDT")
+                        print(f"No profitable opportunity found after fees.")
 
                 except BinanceAPIException as e:
                     err_msg = f"⚠️ *Binance Trade Error:* `{e.message}`"
@@ -169,17 +207,17 @@ def run_arbitrage_bot():
         except Exception as e:
             print(f"Unexpected Loop Error: {e}")
 
-        time.sleep(5)
+        time.sleep(3)
 
 # ---------------------------------------------------------
 # 6. Render Web Service & Background Bot Execution
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    # Bot ကို Thread အဖြစ် Background တွင် ပတ်ခိုင်းထားသည်
+    # Bot ကို Thread အဖြစ် Background တွင် စတင်သည်
     bot_thread = threading.Thread(target=run_arbitrage_bot)
     bot_thread.daemon = True
     bot_thread.start()
 
-    # Render မှ Assign လုပ်ပေးမည့် Web Port ကို ပွင့်စေသည်
+    # Render မှ Assign လုပ်ပေးမည့် Web Port ကို ဖွင့်ပေးသည်
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
