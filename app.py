@@ -3,6 +3,7 @@ import math
 import time
 import threading
 import requests
+from decimal import Decimal
 from flask import Flask
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -58,7 +59,7 @@ def sync_server_time():
         print(f"Time Sync Error: {e}")
 
 # ---------------------------------------------------------
-# 4. LOT_SIZE & MARKET_LOT_SIZE Precision Helper Function
+# 4. LOT_SIZE Precision Helper Function (Decimal Precision Fix)
 # ---------------------------------------------------------
 symbol_info_cache = {}
 
@@ -78,24 +79,32 @@ def get_symbol_filter(symbol, filter_type):
     return None
 
 def format_quantity(symbol, quantity):
-    """MARKET_LOT_SIZE သို့မဟုတ် LOT_SIZE အလိုက် ပမာဏကို တိကျစွာ Round ဖြတ်ပေးသည်"""
-    lot_size_filter = get_symbol_filter(symbol, 'MARKET_LOT_SIZE') or get_symbol_filter(symbol, 'LOT_SIZE')
-    if not lot_size_filter:
-        return quantity
+    """LOT_SIZE ၏ stepSize ကို အခြေခံ၍ Quantity Precision ကို တိကျစွာ ဖြတ်ပေးသည်"""
+    lot_filter = get_symbol_filter(symbol, 'LOT_SIZE')
+    if not lot_filter:
+        return round(quantity, 5)
 
-    step_size = float(lot_size_filter['stepSize'])
-    if step_size == 0:
-        return quantity
+    step_size_str = lot_filter['stepSize']
+    step_decimal = Decimal(step_size_str)
+    qty_decimal = Decimal(str(quantity))
 
-    precision = int(round(-math.log10(step_size)))
-    if precision <= 0:
-        return float(int(quantity))
-    
-    factor = 10 ** precision
-    return math.floor(quantity * factor) / factor
+    # Precision ဒသမနေရာ ရေတွက်ခြင်း
+    step_str = step_size_str.rstrip('0')
+    if '.' in step_str:
+        precision = len(step_str.split('.')[1])
+    else:
+        precision = 0
+
+    # Step size အလိုက် အောက်သို့ တိကျစွာ Floor ဖြတ်ခြင်း
+    formatted = (qty_decimal // step_decimal) * step_decimal
+
+    if precision == 0:
+        return int(formatted)
+    else:
+        return float(f"{formatted:.{precision}f}")
 
 # ---------------------------------------------------------
-# 5. Emergency Rollback Function (ဝယ်ပြီး ကျန်ခဲ့ပါက USDT သို့ အလိုအလျောက် ပြန်ရောင်းပေးရန်)
+# 5. Emergency Rollback Function
 # ---------------------------------------------------------
 def emergency_rollback(asset_to_sell, target_symbol):
     try:
@@ -117,13 +126,12 @@ def emergency_rollback(asset_to_sell, target_symbol):
 def run_arbitrage_bot():
     print("Starting Binance Spot Arbitrage Bot...")
     sync_server_time()
-    send_telegram("🚀 *Binance Arbitrage Bot (Optimized Market Execution) စတင်လည်ပတ်နေပါပြီ။*")
+    send_telegram("🚀 *Binance Arbitrage Bot (Fixed Quantity Precision) စတင်လည်ပတ်နေပါပြီ။*")
     
-    FEE_FACTOR = 0.999           # Binance Spot Fee 0.1% (Trade တိုင်းအတွက် 99.9% သာကျန်မည်)
+    FEE_FACTOR = 0.999           # Binance Spot Fee 0.1%
     MIN_PROFIT_THRESHOLD = 0.02  # Net Fee နှုတ်ပြီး အနည်းဆုံး 0.02 USDT မြတ်မှ လုပ်မည်
     MIN_REQUIRED_USDT = 10.0     # Binance Minimum Order Limit (~10 USDT)
 
-    # Top 10 Popular Crypto Triangles (USDT -> BTC -> Coin -> USDT)
     triangles = [
         {'base': 'BTCUSDT', 'cross': 'ETHBTC', 'exit': 'ETHUSDT', 'coin1': 'BTC', 'coin2': 'ETH'},
         {'base': 'BTCUSDT', 'cross': 'BNBBTC', 'exit': 'BNBUSDT', 'coin1': 'BTC', 'coin2': 'BNB'},
@@ -157,7 +165,6 @@ def run_arbitrage_bot():
                     ticker_cross = float(client.get_symbol_ticker(symbol=t['cross'])['price'])
                     ticker_exit = float(client.get_symbol_ticker(symbol=t['exit'])['price'])
 
-                    # Fee နှုတ်ပြီး Net Profit တွက်ချက်ခြင်း
                     raw_q1 = TRADE_CAPITAL / ticker_base
                     q1 = format_quantity(t['base'], raw_q1)
                     q1_after_fee = q1 * FEE_FACTOR
@@ -177,7 +184,7 @@ def run_arbitrage_bot():
 
                         print(f"⚡ Arbitrage Opportunity Found! Expected Net Profit: {potential_profit:.4f} USDT")
 
-                        # Leg 1: BUY Base Coin (BTC)
+                        # Leg 1 Execution
                         order1 = client.create_order(symbol=t['base'], side='BUY', type='MARKET', quantity=q1, recvWindow=60000)
                         print(f"[Leg 1] Executed BUY {t['base']} Qty: {q1}")
 
@@ -185,7 +192,6 @@ def run_arbitrage_bot():
                         try:
                             time.sleep(0.3)
                             actual_coin1_bal = float(client.get_asset_balance(asset=t['coin1'], recvWindow=60000)['free'])
-                            # Safety factor 0.995 ဖြင့် insufficient balance မဖြစ်အောင် ကာကွယ်ခြင်း
                             q2_formatted = format_quantity(t['cross'], (actual_coin1_bal * 0.995) / ticker_cross)
                             order2 = client.create_order(symbol=t['cross'], side='BUY', type='MARKET', quantity=q2_formatted, recvWindow=60000)
                             print(f"[Leg 2] Executed BUY {t['cross']} Qty: {q2_formatted}")
@@ -193,7 +199,7 @@ def run_arbitrage_bot():
                             err_msg = f"⚠️ *Leg 2 Failed:* `{e2}`. Reverting Leg 1..."
                             print(err_msg)
                             send_telegram(err_msg)
-                            emergency_rollback(t['coin1'], t['base'])  # BTC ကို USDT သို့ ပြန်ရောင်းမည်
+                            emergency_rollback(t['coin1'], t['base'])
                             continue
 
                         # Leg 3 Execution
@@ -207,7 +213,7 @@ def run_arbitrage_bot():
                             err_msg = f"⚠️ *Leg 3 Failed:* `{e3}`. Reverting Leg 2..."
                             print(err_msg)
                             send_telegram(err_msg)
-                            emergency_rollback(t['coin2'], t['exit'])  # Coin2 ကို USDT သို့ ပြန်ရောင်းမည်
+                            emergency_rollback(t['coin2'], t['exit'])
                             continue
 
                         # Summary
