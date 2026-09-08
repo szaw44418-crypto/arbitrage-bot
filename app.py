@@ -1,259 +1,294 @@
+import logging
 import os
 import time
-import sys
-import random
-import threading
-import requests
-from datetime import datetime
-from flask import Flask
+import urllib.parse
+import urllib.request
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
+from colorama import Fore, Style, init
 
-app = Flask(__name__)
+# ==========================================
+# 🔑 CREDENTIALS & CONFIGURATION
+# ==========================================
+SPOT_BASE = "https://testnet.binance.vision"
 
-def log_info(msg):
-    print(msg, flush=True)
-    sys.stdout.flush()
-
-@app.route('/', methods=['GET', 'HEAD'])
-def health_check():
-    return "Mainnet Funding Scanner & Reporter is Running!", 200
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# Web Server ကို Background Thread ဖြင့် Run ခြင်း
-threading.Thread(target=run_web_server, daemon=True).start()
+SPOT_API_KEY = os.environ.get(
+    "SPOT_API_KEY",
+    "EGMDZzNYcF8aHKsKGxWurbK63sLFdKA42cDEZC3zd8IPkyD3JDEH7btCt4D34aWV",
+)
+SPOT_SECRET_KEY = os.environ.get(
+    "SPOT_SECRET_KEY",
+    "YfGOumNKz4MMbZ9MBy7aMB3R6CWxSjVljJvreup8k3BGL5pi1pqc73ieCpOghM8R",
+)
 
 # 📱 Telegram Credentials
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q7tQP_v3kNVAyslSYD3FsAWz60").strip()
+TELEGRAM_BOT_TOKEN = os.environ.get(
+    "TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q7tQP_v3kNVAyslSYD3FsAWz60"
+).strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
-SIMULATED_CAPITAL_USDT = float(os.environ.get("SIMULATED_CAPITAL_USDT", 100.0))
 
-# 🎯 Filter သတ်မှတ်ချက်များ (TEST MODE: Filter ကို အပြည့်အဝ ဖြေလျှော့ထားသည်)
-MIN_NET_PROFIT_THRESHOLD = -10.0  # Telegram Alert စမ်းသပ်ရန် Threshold ကို ပိတ်ထားသည်
-MIN_24H_VOLUME_USDT = 20000       # 24h Volume ($20,000)
+# Trading Parameters
+base_currency = "USDT"  # Base Coin
+second_currency = "BTC"  # Second Coin
+third_currency_list = ["ETH", "BNB", "XRP"]  # Third Coins List
 
-# 🌐 Binance Multi-Endpoints
-FUTURES_ENDPOINTS = [
-    "https://fapi.binance.com",
-    "https://fapi1.binance.com",
-    "https://fapi2.binance.com",
-    "https://fapi3.binance.com"
-]
+threshold_profit = 0.2  # USDT အနည်းဆုံး ရရှိလိုသည့် အမြတ်
+percentage_of_full_amount = 0.95  # Balance ၏ 95% အသုံးပြုမည် (Buffer ပေးရန်)
+TAKER_FEE = 0.001  # Binance Default Taker Fee (0.1%)
+MAX_WAIT_ATTEMPTS = 10  # Timeout Limit
+WAIT_INTERVAL = 1.5  # Seconds
 
-SPOT_ENDPOINTS = [
-    "https://api.binance.com",
-    "https://api1.binance.com",
-    "https://api2.binance.com",
-    "https://api3.binance.com"
-]
+# Initialize Client with Testnet
+client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-]
+# Colorama Setup
+init()
 
-session = requests.Session()
 
-def get_headers():
-    return {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Accept': 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache'
-    }
-
-def send_telegram_message(message_text):
+# ==========================================
+# 📱 TELEGRAM NOTIFICATION HELPER
+# ==========================================
+def send_telegram_msg(message: str):
+    """Telegram သို့ Instant Alert မက်ဆေ့ဂျ် ပို့ပေးသည့် Function"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        log_info("⚠️ Telegram Credentials မပြည့်စုံပါ။")
         return
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message_text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
     try:
-        res = requests.post(url, json=payload, timeout=8)
-        if res.status_code == 200:
-            log_info("📲 Telegram Notification ပို့ဆောင်ပြီးပါပြီ။")
-        else:
-            log_info(f"⚠️ Telegram Error (Status Code: {res.status_code})")
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = urllib.parse.urlencode(
+            {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+        ).encode("utf-8")
+        req = urllib.request.Request(url, data=payload)
+        urllib.request.urlopen(req, timeout=5)
     except Exception as e:
-        log_info(f"⚠️ Telegram Request Exception: {e}")
+        logging.error(f"Failed to send Telegram notification: {e}")
 
-def safe_api_get(endpoints, path, params=None):
-    time.sleep(0.1)
-    for base_url in endpoints:
-        url = f"{base_url}{path}"
-        try:
-            res = session.get(url, params=params, headers=get_headers(), timeout=6)
-            if res.status_code == 200:
-                return res.json()
-            elif res.status_code == 429:
-                time.sleep(0.5)
-        except requests.exceptions.RequestException:
-            continue
-    return None
 
-def get_all_perpetual_symbols():
-    f_data = safe_api_get(FUTURES_ENDPOINTS, "/fapi/v1/exchangeInfo")
-    f_symbols = set()
-    if f_data and 'symbols' in f_data:
-        for s in f_data['symbols']:
-            if s.get('contractType') == 'PERPETUAL' and s.get('status') == 'TRADING' and s['symbol'].endswith('USDT'):
-                f_symbols.add(s['symbol'])
+class ColorfulFormatter(logging.Formatter):
 
-    s_data = safe_api_get(SPOT_ENDPOINTS, "/api/v3/exchangeInfo")
-    s_symbols = set()
-    if s_data and 'symbols' in s_data:
-        for s in s_data['symbols']:
-            if s.get('status') == 'TRADING' and s['symbol'].endswith('USDT'):
-                s_symbols.add(s['symbol'])
+    def format(self, record):
+        if record.levelno == logging.INFO:
+            if "Applying Arbitrage" in record.msg:
+                return Fore.GREEN + super().format(record) + Style.RESET_ALL
+            elif "Arbitrage Opportunity" in record.msg:
+                return Fore.YELLOW + super().format(record) + Style.RESET_ALL
+            elif "No arbitrage opportunity" in record.msg:
+                return Fore.RED + super().format(record) + Style.RESET_ALL
+            else:
+                return (
+                    Fore.LIGHTWHITE_EX
+                    + super().format(record)
+                    + Style.RESET_ALL
+                )
+        return super().format(record)
 
-    valid_symbols = list(f_symbols.intersection(s_symbols))
-    return valid_symbols if valid_symbols else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
 
-def scan_and_report_opportunities():
-    log_info("\n" + "="*60)
-    log_info(f"🔍 [MAINNET MARKET SCANNER] - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    log_info("="*60)
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler()],
+    format="%(message)s",
+)
+logging.getLogger().handlers[0].setFormatter(ColorfulFormatter("%(message)s"))
 
+
+# ==========================================
+# 🛠️ HELPER FUNCTIONS
+# ==========================================
+def get_balance(asset_name):
+    """Binance မှ Asset ၏ Free Balance ကို ရယူပေးသည့် Function"""
     try:
-        prem_list = safe_api_get(FUTURES_ENDPOINTS, "/fapi/v1/premiumIndex")
-        if not prem_list or not isinstance(prem_list, list):
-            log_info("⚠️ Premium Index Data ရယူ၍ မရပါ။")
-            return
+        balance_info = client.get_asset_balance(asset=asset_name)
+        if balance_info:
+            return float(balance_info["free"])
+        return 0.0
+    except BinanceAPIException as e:
+        logging.error(f"Error fetching balance for {asset_name}: {e}")
+        return 0.0
 
-        prem_data = {item['symbol']: item for item in prem_list if isinstance(item, dict)}
 
-        ticker_list = safe_api_get(FUTURES_ENDPOINTS, "/fapi/v1/ticker/24hr")
-        if not ticker_list or not isinstance(ticker_list, list):
-            log_info("⚠️ Ticker 24hr Data ရယူ၍ မရပါ။")
-            return
+def wait_for_balance(asset_name, min_amount=0.0):
+    """Order ပြည့်မီပြီး အကောင့်ထဲ ငွေရောက်လာသည်အထိ စောင့်ဆိုင်းပေးသည့် Function"""
+    attempts = 0
+    while attempts < MAX_WAIT_ATTEMPTS:
+        bal = get_balance(asset_name)
+        if bal > min_amount:
+            return bal
+        logging.info(
+            f"Waiting for {asset_name} balance to update (Current: {bal})..."
+        )
+        time.sleep(WAIT_INTERVAL)
+        attempts += 1
+    return get_balance(asset_name)
 
-        ticker_data = {item['symbol']: item for item in ticker_list if isinstance(item, dict)}
 
-        all_symbols = get_all_perpetual_symbols()
-        valid_candidates = []
+def arbitrage_opportunity(
+    prices, base_amount, first_pair, second_pair, third_pair, fee=TAKER_FEE
+):
+    """Fees များ ထည့်သွင်းတွက်ချက်ထားသော အမြတ်စစ်ဆေးသည့် Function"""
+    fee_factor = 1.0 - fee
 
-        for symbol in all_symbols:
-            if symbol in prem_data and symbol in ticker_data:
-                p_info = prem_data[symbol]
-                t_info = ticker_data[symbol]
+    first_price = prices[first_pair]
+    second_price = prices[second_pair]
+    third_price = prices[third_pair]
 
-                funding_rate = float(p_info.get('lastFundingRate', 0)) * 100
-                volume_24h = float(t_info.get('quoteVolume', 0))
-                next_funding_time = int(p_info.get('nextFundingTime', 0))
+    # Leg 1: USDT -> BTC
+    second_amount = (base_amount / first_price) * fee_factor
+    # Leg 2: BTC -> ETH
+    third_amount = (second_amount / second_price) * fee_factor
+    # Leg 3: ETH -> USDT
+    final_base_amount = (third_amount * third_price) * fee_factor
 
-                # 24h Volume စစ်ဆေးခြင်း ($20K အထက်)
-                if volume_24h < MIN_24H_VOLUME_USDT:
-                    continue
+    potential_profit = final_base_amount - base_amount
+    return potential_profit
 
-                est_spot_fee_pct = 0.20
-                est_futures_fee_pct = 0.08
-                est_slippage_pct = 0.03
-                total_costs_pct = est_spot_fee_pct + est_futures_fee_pct + est_slippage_pct
 
-                expected_net_profit_pct = funding_rate - total_costs_pct
-
-                valid_candidates.append({
-                    'symbol': symbol,
-                    'funding_rate': funding_rate,
-                    'net_profit_pct': expected_net_profit_pct,
-                    'total_costs_pct': total_costs_pct,
-                    'volume_24h': volume_24h,
-                    'next_funding_time': next_funding_time,
-                    'mark_price': float(p_info.get('markPrice', 0))
-                })
-
-        if not valid_candidates:
-            log_info("ℹ️ လက်ရှိအချိန်တွင် သတ်မှတ်ချက်ပြည့်မီသော Coin မတွေ့ရှိသေးပါ။")
-            return
-
-        # Funding Rate / Net Profit အများဆုံး Coin များကို အစဉ်လိုက် စီစဉ်ခြင်း
-        valid_candidates.sort(key=lambda x: x['funding_rate'], reverse=True)
-        log_info(f"🎯 စစ်ဆေးတွေ့ရှိသော Coin စုစုပေါင်း ({len(valid_candidates)}) မျိုးမှ ထိပ်ဆုံး ၃ ခုကို Telegram ပို့ပေးပါမည်:\n")
-
-        # ထိပ်ဆုံး Funding Rate အများဆုံး ၃ ခုကို Telegram သို့ ပို့ပေးမည်
-        for idx, candidate in enumerate(valid_candidates[:3], 1):
-            generate_simulation_report(candidate, idx, SIMULATED_CAPITAL_USDT)
-
-    except Exception as e:
-        log_info(f"⚠️ Scanner Error: {e}")
-
-def generate_simulation_report(candidate, rank, capital):
-    symbol = candidate['symbol']
-    funding_rate = candidate['funding_rate']
-    net_profit_pct = candidate['net_profit_pct']
-    total_costs_pct = candidate['total_costs_pct']
-    volume = candidate['volume_24h']
-    mark_price = candidate['mark_price']
-
-    gross_funding_revenue = capital * (funding_rate / 100.0)
-    estimated_total_cost = capital * (total_costs_pct / 100.0)
-    net_estimated_profit_usdt = gross_funding_revenue - estimated_total_cost
-
-    nft_dt = datetime.fromtimestamp(candidate['next_funding_time'] / 1000.0)
-    time_str = nft_dt.strftime('%Y-%m-%d %H:%M:%S')
-
-    base_asset = symbol.replace("USDT", "")
-
-    log_info(f"==================================================")
-    log_info(f"📊 [ARBITRAGE OPPORTUNITY #{rank}]: {symbol}")
-    log_info(f"==================================================")
-    log_info(f"🔹 Mark Price: {mark_price:.4f} USDT")
-    log_info(f"🔹 24h Volume: ${volume:,.2f} USDT")
-    log_info(f"⏰ Next Funding Time: {time_str}")
-    log_info(f"--------------------------------------------------")
-    log_info(f"📈 Current Funding Rate: {funding_rate:+.4f}%")
-    log_info(f"💸 Est. Total Fees & Slippage: {total_costs_pct:.4f}%")
-    log_info(f"🎯 EST. NET PROFIT MARGIN: {net_profit_pct:+.4f}%")
-    log_info(f"--------------------------------------------------")
-    log_info(f"💵 [ESTIMATED P&L WITH ${capital:.0f} CAPITAL]:")
-    log_info(f"   • Gross Funding Income: +${gross_funding_revenue:.4f} USDT")
-    log_info(f"   • Est. Trading Costs:  -${estimated_total_cost:.4f} USDT")
-    log_info(f"   • EST. NET PROFIT:     +${net_estimated_profit_usdt:.4f} USDT")
-    log_info(f"==================================================\n")
-
-    tg_text = (
-        f"🚀 <b>DELTA-NEUTRAL ARBITRAGE SCANNER #{rank}</b>\n\n"
-        f"🪙 <b>Coin:</b> <code>{symbol}</code>\n"
-        f"🔹 <b>Mark Price:</b> {mark_price:.4f} USDT\n"
-        f"🔹 <b>24h Volume:</b> ${volume:,.2f} USDT\n"
-        f"⏰ <b>Next Funding:</b> {time_str}\n"
-        f"-----------------------------------\n"
-        f"📈 <b>Funding Rate:</b> <code>{funding_rate:+.4f}%</code>\n"
-        f"💸 <b>Total Fees & Slippage:</b> <code>{total_costs_pct:.4f}%</code>\n"
-        f"🎯 <b>EST. NET PROFIT MARGIN:</b> <code>{net_profit_pct:+.4f}%</code>\n"
-        f"-----------------------------------\n"
-        f"💵 <b>ESTIMATED P&L (${capital:.0f} Capital):</b>\n"
-        f"• Gross Income: +${gross_funding_revenue:.4f} USDT\n"
-        f"• Total Costs: -${estimated_total_cost:.4f} USDT\n"
-        f"🔥 <b>NET PROFIT: +${net_estimated_profit_usdt:.4f} USDT</b>\n"
-        f"-----------------------------------\n"
-        f"🛡️ <b>EXECUTION STRATEGY (Delta-Neutral):</b>\n"
-        f"1. <b>Spot:</b> Buy ${capital:.0f} worth of <code>{base_asset}</code>\n"
-        f"2. <b>Futures:</b> Short 1x <code>{symbol}</code> with ${capital:.0f}\n"
-        f"⚠️ <i>Do NOT open Futures Short alone without Spot Hedge!</i>"
-    )
-    send_telegram_message(tg_text)
-
-def start_dry_run_bot():
-    log_info("🤖 MAINNET SCANNER & REPORTING BOT STARTED (FORCE-TEST MODE)")
-    log_info("💡 Scanning Market & Sending Top 3 Pairs to Telegram...\n")
+# ==========================================
+# 🚀 MAIN TRADING BOT LOOP
+# ==========================================
+if __name__ == "__main__":
+    start_msg = "🚀 <b>Binance Spot Testnet Arbitrage Bot Started!</b>\nMonitoring triangular arbitrage opportunities..."
+    logging.info("Starting Binance Spot Testnet Arbitrage Bot...")
+    send_telegram_msg(start_msg)
 
     while True:
         try:
-            scan_and_report_opportunities()
-            log_info("💤 Sleeping for 5 minutes before next scan...\n")
-            time.sleep(300)
-        except Exception as e:
-            log_info(f"⚠️ Main Loop Error: {e}")
-            time.sleep(60)
+            # ၁။ Base Balance ရယူခြင်း
+            balance_base = get_balance(base_currency)
+            logging.info(f"Current {base_currency} Balance: {balance_base:.2f}")
 
-if __name__ == "__main__":
-    start_dry_run_bot()
+            if balance_base <= 5.0:
+                logging.warning(
+                    f"Insufficient {base_currency} balance ({balance_base:.2f}). Waiting 10s..."
+                )
+                time.sleep(10)
+                continue
+
+            # ၂။ Ticker Prices ရယူခြင်း
+            all_tickers = client.get_all_tickers()
+            prices = {
+                t["symbol"]: float(t["price"])
+                for t in all_tickers
+                if "price" in t
+            }
+
+            first_pair = f"{second_currency}{base_currency}"
+
+            # ၃။ Pair များကို စစ်ဆေးခြင်း
+            for third_currency in third_currency_list:
+                second_pair = f"{third_currency}{second_currency}"
+                third_pair = f"{third_currency}{base_currency}"
+
+                if not all(
+                    p in prices for p in [first_pair, second_pair, third_pair]
+                ):
+                    continue
+
+                potential_profit = arbitrage_opportunity(
+                    prices,
+                    balance_base,
+                    first_pair,
+                    second_pair,
+                    third_pair,
+                    fee=TAKER_FEE,
+                )
+
+                logging.info(
+                    f"Verifying: {base_currency} -> {second_currency} -> {third_currency}"
+                )
+
+                if potential_profit >= threshold_profit:
+                    alert_text = (
+                        f"⚡ <b>Arbitrage Opportunity Detected!</b>\n"
+                        f"Route: {base_currency} ➡️ {second_currency} ➡️ {third_currency} ➡️ {base_currency}\n"
+                        f"Expected Profit: <b>+{potential_profit:.4f} {base_currency}</b>\n"
+                        f"Executing trades..."
+                    )
+                    logging.info(
+                        f"Applying Arbitrage: Potential Profit = {potential_profit:.4f} {base_currency}"
+                    )
+                    send_telegram_msg(alert_text)
+
+                    # --- LEG 1: BUY BTC with USDT ---
+                    buy_amount_usdt = (
+                        balance_base * percentage_of_full_amount
+                    )
+                    vol_leg1 = round(buy_amount_usdt / prices[first_pair], 5)
+
+                    logging.info(
+                        f"[Leg 1] BUY {first_pair} Volume: {vol_leg1}"
+                    )
+                    order1 = client.order_market_buy(
+                        symbol=first_pair, quantity=vol_leg1
+                    )
+
+                    sec_bal = wait_for_balance(second_currency)
+                    if sec_bal <= 0:
+                        err_msg = "❌ <b>Leg 1 Execution Failed!</b> Stopping cycle."
+                        logging.error(err_msg)
+                        send_telegram_msg(err_msg)
+                        break
+
+                    # --- LEG 2: BUY ETH with BTC ---
+                    buy_amount_btc = sec_bal * percentage_of_full_amount
+                    vol_leg2 = round(buy_amount_btc / prices[second_pair], 4)
+
+                    logging.info(
+                        f"[Leg 2] BUY {second_pair} Volume: {vol_leg2}"
+                    )
+                    order2 = client.order_market_buy(
+                        symbol=second_pair, quantity=vol_leg2
+                    )
+
+                    third_bal = wait_for_balance(third_currency)
+                    if third_bal <= 0:
+                        err_msg = "❌ <b>Leg 2 Execution Failed!</b> Stopping cycle."
+                        logging.error(err_msg)
+                        send_telegram_msg(err_msg)
+                        break
+
+                    # --- LEG 3: SELL ETH for USDT ---
+                    vol_leg3 = round(third_bal, 4)
+                    logging.info(
+                        f"[Leg 3] SELL {third_pair} Volume: {vol_leg3}"
+                    )
+                    order3 = client.order_market_sell(
+                        symbol=third_pair, quantity=vol_leg3
+                    )
+
+                    final_usdt = wait_for_balance(
+                        base_currency, min_amount=balance_base
+                    )
+                    realized_profit = final_usdt - balance_base
+
+                    success_msg = (
+                        f"✅ <b>Arbitrage Trade Completed!</b>\n"
+                        f"Initial Balance: {balance_base:.2f} {base_currency}\n"
+                        f"Final Balance: {final_usdt:.2f} {base_currency}\n"
+                        f"Net Realized Profit: <b>+{realized_profit:.4f} {base_currency}</b>"
+                    )
+                    logging.info(
+                        f"Arbitrage Completed! Realized Profit: {realized_profit:.4f} {base_currency}\n"
+                    )
+                    send_telegram_msg(success_msg)
+                    break
+
+                elif threshold_profit > potential_profit > 0:
+                    logging.info(
+                        f"Arbitrage Opportunity: {potential_profit:.5f} {base_currency} (Below Threshold)"
+                    )
+                else:
+                    logging.info(
+                        f"No arbitrage opportunity: {potential_profit:.4f} {base_currency}"
+                    )
+
+                time.sleep(1)
+
+        except BinanceAPIException as e:
+            err_log = f"⚠️ <b>Binance API Error:</b> {e.message}"
+            logging.error(f"Binance API Exception: {e}")
+            send_telegram_msg(err_log)
+            time.sleep(5)
+        except Exception as e:
+            err_log = f"🚨 <b>Unexpected Bot Error:</b> {str(e)}"
+            logging.error(f"Unexpected error: {e}")
+            send_telegram_msg(err_log)
+            time.sleep(5)
