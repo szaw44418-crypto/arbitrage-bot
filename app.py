@@ -286,12 +286,18 @@ def run_arbitrage_bot():
         time.sleep(3)
 
 # ---------------------------------------------------------
-# 5. Render Web Service Launch
 # ---------------------------------------------------------
-if __name__ == "__main__":
+# Render Web Service Launch & Background Threading Fix
+# ---------------------------------------------------------
+
+def start_bot_thread():
     bot_thread = threading.Thread(target=run_arbitrage_bot)
     bot_thread.daemon = True
     bot_thread.start()
 
+# Global scope တွင် ခေါ်ပေးခြင်းဖြင့် Render က App ကို ပွင့်သည်နှင့် Bot Thread စတင်ပါမည်
+start_bot_thread()
+
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
