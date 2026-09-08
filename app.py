@@ -28,15 +28,13 @@ SPOT_SECRET_KEY = os.environ.get("SPOT_SECRET_KEY", "YfGOumNKz4MMbZ9MBy7aMB3R6CW
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q7tQP_v3kNVAyslSYD3FsAWz60").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
 
-# Binance Client Setup (Spot Testnet)
 client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
 client.API_URL = f"{SPOT_BASE}/api"
 
 # ---------------------------------------------------------
-# 3. Helper Functions (Telegram & Time Sync)
+# 3. Helper Functions
 # ---------------------------------------------------------
 def send_telegram(message):
-    """Telegram သို့ အကြောင်းကြားစာ ပို့ပေးသည့် Function"""
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -50,7 +48,6 @@ def send_telegram(message):
             print(f"Telegram Sending Error: {e}")
 
 def sync_server_time():
-    """Binance Server နှင့် Local Time ကွာဟချက်ကို ညှိပေးသည် (-1021 Error ကာကွယ်ရန်)"""
     try:
         server_time = client.get_server_time()
         local_time = int(time.time() * 1000)
@@ -58,9 +55,6 @@ def sync_server_time():
     except Exception as e:
         print(f"Time Sync Error: {e}")
 
-# ---------------------------------------------------------
-# 4. LOT_SIZE Precision Helper Function (Decimal Precision Fix)
-# ---------------------------------------------------------
 symbol_info_cache = {}
 
 def get_symbol_filter(symbol, filter_type):
@@ -79,7 +73,6 @@ def get_symbol_filter(symbol, filter_type):
     return None
 
 def format_quantity(symbol, quantity):
-    """LOT_SIZE ၏ stepSize ကို အခြေခံ၍ Quantity Precision ကို တိကျစွာ ဖြတ်ပေးသည်"""
     lot_filter = get_symbol_filter(symbol, 'LOT_SIZE')
     if not lot_filter:
         return round(quantity, 5)
@@ -88,14 +81,9 @@ def format_quantity(symbol, quantity):
     step_decimal = Decimal(step_size_str)
     qty_decimal = Decimal(str(quantity))
 
-    # Precision ဒသမနေရာ ရေတွက်ခြင်း
     step_str = step_size_str.rstrip('0')
-    if '.' in step_str:
-        precision = len(step_str.split('.')[1])
-    else:
-        precision = 0
+    precision = len(step_str.split('.')[1]) if '.' in step_str else 0
 
-    # Step size အလိုက် အောက်သို့ တိကျစွာ Floor ဖြတ်ခြင်း
     formatted = (qty_decimal // step_decimal) * step_decimal
 
     if precision == 0:
@@ -103,9 +91,6 @@ def format_quantity(symbol, quantity):
     else:
         return float(f"{formatted:.{precision}f}")
 
-# ---------------------------------------------------------
-# 5. Emergency Rollback Function
-# ---------------------------------------------------------
 def emergency_rollback(asset_to_sell, target_symbol):
     try:
         time.sleep(0.5)
@@ -121,16 +106,16 @@ def emergency_rollback(asset_to_sell, target_symbol):
         print(f"Rollback failed for {asset_to_sell}: {err}")
 
 # ---------------------------------------------------------
-# 6. Triangular Arbitrage Core Logic
+# 4. Triangular Arbitrage Core Logic
 # ---------------------------------------------------------
 def run_arbitrage_bot():
     print("Starting Binance Spot Arbitrage Bot...")
     sync_server_time()
-    send_telegram("🚀 *Binance Arbitrage Bot (Fixed Quantity Precision) စတင်လည်ပတ်နေပါပြီ။*")
+    send_telegram("🚀 *Binance Arbitrage Bot (Slippage & Balance Protection Fixed) စတင်လည်ပတ်နေပါပြီ။*")
     
     FEE_FACTOR = 0.999           # Binance Spot Fee 0.1%
     MIN_PROFIT_THRESHOLD = 0.02  # Net Fee နှုတ်ပြီး အနည်းဆုံး 0.02 USDT မြတ်မှ လုပ်မည်
-    MIN_REQUIRED_USDT = 10.0     # Binance Minimum Order Limit (~10 USDT)
+    MIN_REQUIRED_USDT = 10.0     
 
     triangles = [
         {'base': 'BTCUSDT', 'cross': 'ETHBTC', 'exit': 'ETHUSDT', 'coin1': 'BTC', 'coin2': 'ETH'},
@@ -157,7 +142,6 @@ def run_arbitrage_bot():
                 continue
 
             TRADE_CAPITAL = min(100.0, total_usdt_balance * 0.95)
-            print(f"Active Trade Capital: {TRADE_CAPITAL:.2f} USDT")
 
             for t in triangles:
                 try:
@@ -184,17 +168,26 @@ def run_arbitrage_bot():
 
                         print(f"⚡ Arbitrage Opportunity Found! Expected Net Profit: {potential_profit:.4f} USDT")
 
-                        # Leg 1 Execution
+                        # Leg 1 Execution (BUY BTC)
                         order1 = client.create_order(symbol=t['base'], side='BUY', type='MARKET', quantity=q1, recvWindow=60000)
                         print(f"[Leg 1] Executed BUY {t['base']} Qty: {q1}")
 
-                        # Leg 2 Execution
+                        # Leg 2 Execution (BUY Cross Asset using exact BTC quoteOrderQty)
                         try:
-                            time.sleep(0.3)
-                            actual_coin1_bal = float(client.get_asset_balance(asset=t['coin1'], recvWindow=60000)['free'])
-                            q2_formatted = format_quantity(t['cross'], (actual_coin1_bal * 0.995) / ticker_cross)
-                            order2 = client.create_order(symbol=t['cross'], side='BUY', type='MARKET', quantity=q2_formatted, recvWindow=60000)
-                            print(f"[Leg 2] Executed BUY {t['cross']} Qty: {q2_formatted}")
+                            time.sleep(0.4)
+                            actual_btc_bal = float(client.get_asset_balance(asset=t['coin1'], recvWindow=60000)['free'])
+                            
+                            # 98.5% of BTC balance to avoid any precision/slippage issue
+                            btc_to_spend = round(actual_btc_bal * 0.985, 8) 
+                            
+                            order2 = client.create_order(
+                                symbol=t['cross'], 
+                                side='BUY', 
+                                type='MARKET', 
+                                quoteOrderQty=btc_to_spend, 
+                                recvWindow=60000
+                            )
+                            print(f"[Leg 2] Executed BUY {t['cross']} QuoteQty: {btc_to_spend} BTC")
                         except Exception as e2:
                             err_msg = f"⚠️ *Leg 2 Failed:* `{e2}`. Reverting Leg 1..."
                             print(err_msg)
@@ -202,11 +195,11 @@ def run_arbitrage_bot():
                             emergency_rollback(t['coin1'], t['base'])
                             continue
 
-                        # Leg 3 Execution
+                        # Leg 3 Execution (SELL Coin2 for USDT)
                         try:
-                            time.sleep(0.3)
+                            time.sleep(0.4)
                             actual_coin2_bal = float(client.get_asset_balance(asset=t['coin2'], recvWindow=60000)['free'])
-                            q3_formatted = format_quantity(t['exit'], actual_coin2_bal * 0.995)
+                            q3_formatted = format_quantity(t['exit'], actual_coin2_bal * 0.99)
                             order3 = client.create_order(symbol=t['exit'], side='SELL', type='MARKET', quantity=q3_formatted, recvWindow=60000)
                             print(f"[Leg 3] Executed SELL {t['exit']} Qty: {q3_formatted}")
                         except Exception as e3:
@@ -256,7 +249,7 @@ def run_arbitrage_bot():
         time.sleep(3)
 
 # ---------------------------------------------------------
-# 7. Render Web Service & Background Bot Execution
+# 5. Render Web Service Launch
 # ---------------------------------------------------------
 if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_arbitrage_bot)
