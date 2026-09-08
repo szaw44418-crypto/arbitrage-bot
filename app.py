@@ -106,6 +106,20 @@ def run_arbitrage_bot():
     MIN_PROFIT_THRESHOLD = 0.02  # Net Fee နှုတ်ပြီး အနည်းဆုံး 0.02 USDT မြတ်မှ လုပ်မည်
     MIN_REQUIRED_USDT = 10.0     # Binance Minimum Order Limit (~10 USDT)
 
+    # Top 10 Popular Crypto Triangles (USDT -> BTC -> Coin -> USDT)
+    triangles = [
+        {'base': 'BTCUSDT', 'cross': 'ETHBTC', 'exit': 'ETHUSDT', 'coin1': 'BTC', 'coin2': 'ETH'},
+        {'base': 'BTCUSDT', 'cross': 'BNBBTC', 'exit': 'BNBUSDT', 'coin1': 'BTC', 'coin2': 'BNB'},
+        {'base': 'BTCUSDT', 'cross': 'SOLBTC', 'exit': 'SOLUSDT', 'coin1': 'BTC', 'coin2': 'SOL'},
+        {'base': 'BTCUSDT', 'cross': 'XRPBTC', 'exit': 'XRPUSDT', 'coin1': 'BTC', 'coin2': 'XRP'},
+        {'base': 'BTCUSDT', 'cross': 'ADABTC', 'exit': 'ADAUSDT', 'coin1': 'BTC', 'coin2': 'ADA'},
+        {'base': 'BTCUSDT', 'cross': 'DOGEBTC', 'exit': 'DOGEUSDT', 'coin1': 'BTC', 'coin2': 'DOGE'},
+        {'base': 'BTCUSDT', 'cross': 'LTCBTC', 'exit': 'LTCUSDT', 'coin1': 'BTC', 'coin2': 'LTC'},
+        {'base': 'BTCUSDT', 'cross': 'DOTBTC', 'exit': 'DOTUSDT', 'coin1': 'BTC', 'coin2': 'DOT'},
+        {'base': 'BTCUSDT', 'cross': 'AVAXBTC', 'exit': 'AVAXUSDT', 'coin1': 'BTC', 'coin2': 'AVAX'},
+        {'base': 'BTCUSDT', 'cross': 'LINKBTC', 'exit': 'LINKUSDT', 'coin1': 'BTC', 'coin2': 'LINK'},
+    ]
+
     while True:
         try:
             sync_server_time()
@@ -121,21 +135,6 @@ def run_arbitrage_bot():
             # Balance ၁၀၀ ထက်ကျော်ပါက ၁၀၀ အတိအကျ သုံးမည်၊ ၁၀၀ အောက်နည်းပါက ရှိသော Balance ၏ 95% ကို Capital အဖြစ် သုံးမည်
             TRADE_CAPITAL = min(100.0, total_usdt_balance * 0.95)
             print(f"Active Trade Capital: {TRADE_CAPITAL:.2f} USDT")
-
-                        triangles = [
-                # Top 10 Popular Crypto Triangles (USDT -> BTC -> Coin -> USDT)
-                {'base': 'BTCUSDT', 'cross': 'ETHBTC', 'exit': 'ETHUSDT', 'coin1': 'BTC', 'coin2': 'ETH'},
-                {'base': 'BTCUSDT', 'cross': 'BNBBTC', 'exit': 'BNBUSDT', 'coin1': 'BTC', 'coin2': 'BNB'},
-                {'base': 'BTCUSDT', 'cross': 'SOLBTC', 'exit': 'SOLUSDT', 'coin1': 'BTC', 'coin2': 'SOL'},
-                {'base': 'BTCUSDT', 'cross': 'XRPBTC', 'exit': 'XRPUSDT', 'coin1': 'BTC', 'coin2': 'XRP'},
-                {'base': 'BTCUSDT', 'cross': 'ADABTC', 'exit': 'ADAUSDT', 'coin1': 'BTC', 'coin2': 'ADA'},
-                {'base': 'BTCUSDT', 'cross': 'DOGEBTC', 'exit': 'DOGEUSDT', 'coin1': 'BTC', 'coin2': 'DOGE'},
-                {'base': 'BTCUSDT', 'cross': 'LTCBTC', 'exit': 'LTCUSDT', 'coin1': 'BTC', 'coin2': 'LTC'},
-                {'base': 'BTCUSDT', 'cross': 'DOTBTC', 'exit': 'DOTUSDT', 'coin1': 'BTC', 'coin2': 'DOT'},
-                {'base': 'BTCUSDT', 'cross': 'AVAXBTC', 'exit': 'AVAXUSDT', 'coin1': 'BTC', 'coin2': 'AVAX'},
-                {'base': 'BTCUSDT', 'cross': 'LINKBTC', 'exit': 'LINKUSDT', 'coin1': 'BTC', 'coin2': 'LINK'},
-            ]
-
 
             for t in triangles:
                 try:
