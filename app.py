@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Binance Spot Arbitrage Bot ($100 Fixed Capital & Optimized Auto-Sweep) is active and running!"
+    return "Binance Spot Arbitrage Bot ($100 Fixed Capital & Asynchronous Cleanup) is active and running!"
 
 # ---------------------------------------------------------
 # 2. Binance & Telegram Credentials Configuration
@@ -137,17 +137,17 @@ def sweep_to_usdt():
     except Exception as e:
         print(f"Sweep Balances Error: {e}")
 
+def initial_cleanup_task():
+    print("🧹 Initial background account cleanup starting...")
+    sweep_to_usdt()
+    print("✅ Initial background account cleanup finished.")
+
 # ---------------------------------------------------------
 # 4. Triangular Arbitrage Core Logic
 # ---------------------------------------------------------
 def run_arbitrage_bot():
     print("Starting Binance Spot Arbitrage Bot ($100 Fixed Capital)...")
     sync_server_time()
-    
-    # Bot စဖွင့်ချိန်တွင် အကောင့်ထဲရှိ Coin အဟောင်းများကို ၁ ကြိမ်သာ အပြီးရှင်းမည်
-    print("🧹 Initializing account cleanup...")
-    sweep_to_usdt()
-    
     send_telegram("🚀 *Binance Arbitrage Bot ($100 Fixed Capital Mode) စတင်လည်ပတ်နေပါပြီ။*")
     
     FEE_FACTOR = 0.999           # Binance Spot Fee 0.1%
@@ -273,7 +273,7 @@ def run_arbitrage_bot():
                         print(report_msg)
                         send_telegram(report_msg)
 
-                        # Trade တစ်ခု အောင်မြင်စွာ ပြီးဆုံးသွားမှ ကျန်ခဲ့သော Coin Balance အကြွင်းအကျန်ကို ရှင်းထုတ်မည်
+                        # Trade တစ်ခု ပြီးမြောက်သွားမှသာ ကျန်ရှိသော Coin အကြွင်းအကျန်များကို ရှင်းထုတ်မည်
                         sweep_to_usdt()
 
                     else:
@@ -292,15 +292,21 @@ def run_arbitrage_bot():
         time.sleep(3)
 
 # ---------------------------------------------------------
-# 5. Render Web Service Launch & Background Threading Fix
+# 5. Render Web Service Launch & Asynchronous Background Threads
 # ---------------------------------------------------------
-def start_bot_thread():
+def start_bot_threads():
+    # ၁။ Coin အဟောင်းများ ရှင်းလင်းခြင်းကို Background Thread သီးသန့်ဖြင့် ဆောင်ရွက်မည်
+    cleanup_thread = threading.Thread(target=initial_cleanup_task)
+    cleanup_thread.daemon = True
+    cleanup_thread.start()
+
+    # ၂။ Arbitrage Bot Core Loop ကို Background Thread ဖြင့် ပုံမှန်အတိုင်း စတင်မည်
     bot_thread = threading.Thread(target=run_arbitrage_bot)
     bot_thread.daemon = True
     bot_thread.start()
 
-# Global scope တွင် ခေါ်ပေးခြင်းဖြင့် Render က App ကို ပွင့်သည်နှင့် Bot Thread စတင်ပါမည်
-start_bot_thread()
+# Server စတင်ပွင့်လာသည်နှင့် Thread များကို တစ်ပြိုင်နက် ဖန်တီးပေးမည်
+start_bot_threads()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
