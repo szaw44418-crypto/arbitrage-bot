@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Binance Spot Arbitrage Bot ($100 Fixed Capital & Auto-Sweep) is active and running!"
+    return "Binance Spot Arbitrage Bot ($100 Fixed Capital & Optimized Auto-Sweep) is active and running!"
 
 # ---------------------------------------------------------
 # 2. Binance & Telegram Credentials Configuration
@@ -121,7 +121,6 @@ def sweep_to_usdt():
                     ticker = float(client.get_symbol_ticker(symbol=symbol)['price'])
                     total_usdt_val = free_bal * ticker
                     
-                    # Minimum Trade Value (5 USDT) ထက် ကြီးပါက Auto Sell ပြုလုပ်မည်
                     if total_usdt_val >= 5.0:
                         qty_to_sell = format_quantity(symbol, free_bal * 0.99)
                         if qty_to_sell > 0:
@@ -144,7 +143,12 @@ def sweep_to_usdt():
 def run_arbitrage_bot():
     print("Starting Binance Spot Arbitrage Bot ($100 Fixed Capital)...")
     sync_server_time()
-    send_telegram("🚀 *Binance Arbitrage Bot ($100 Fixed Capital & Auto-Sweep) စတင်လည်ပတ်နေပါပြီ။*")
+    
+    # Bot စဖွင့်ချိန်တွင် အကောင့်ထဲရှိ Coin အဟောင်းများကို ၁ ကြိမ်သာ အပြီးရှင်းမည်
+    print("🧹 Initializing account cleanup...")
+    sweep_to_usdt()
+    
+    send_telegram("🚀 *Binance Arbitrage Bot ($100 Fixed Capital Mode) စတင်လည်ပတ်နေပါပြီ။*")
     
     FEE_FACTOR = 0.999           # Binance Spot Fee 0.1%
     MIN_PROFIT_THRESHOLD = 0.02  # Net Fee နှုတ်ပြီး အနည်းဆုံး 0.02 USDT မြတ်မှ လုပ်မည်
@@ -166,7 +170,6 @@ def run_arbitrage_bot():
     while True:
         try:
             sync_server_time()
-            sweep_to_usdt()  # Trade မစမီ အခြား Coin လက်ကျန်များကို USDT သို့ ပြန်ပြောင်းမည်
             
             total_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
             print(f"\nCurrent Total USDT Balance: {total_usdt_balance:.2f} USDT | Active Trade Capital: {TRADE_CAPITAL:.2f} USDT")
@@ -270,6 +273,9 @@ def run_arbitrage_bot():
                         print(report_msg)
                         send_telegram(report_msg)
 
+                        # Trade တစ်ခု အောင်မြင်စွာ ပြီးဆုံးသွားမှ ကျန်ခဲ့သော Coin Balance အကြွင်းအကျန်ကို ရှင်းထုတ်မည်
+                        sweep_to_usdt()
+
                     else:
                         print("No profitable opportunity found after fees.")
 
@@ -286,10 +292,8 @@ def run_arbitrage_bot():
         time.sleep(3)
 
 # ---------------------------------------------------------
+# 5. Render Web Service Launch & Background Threading Fix
 # ---------------------------------------------------------
-# Render Web Service Launch & Background Threading Fix
-# ---------------------------------------------------------
-
 def start_bot_thread():
     bot_thread = threading.Thread(target=run_arbitrage_bot)
     bot_thread.daemon = True
