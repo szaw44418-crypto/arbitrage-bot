@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Binance Spot Arbitrage Bot is active and running!"
+    return "Binance Spot Arbitrage Bot ($100 Fixed Capital & Auto-Sweep) is active and running!"
 
 # ---------------------------------------------------------
 # 2. Binance & Telegram Credentials Configuration
@@ -105,17 +105,50 @@ def emergency_rollback(asset_to_sell, target_symbol):
     except Exception as err:
         print(f"Rollback failed for {asset_to_sell}: {err}")
 
+def sweep_to_usdt():
+    """USDT မဟုတ်သော အခြား Coin ကျန်ကြွင်း Balance များကို USDT သို့ အလိုအလျောက် ပြန်ရောင်းပေးသည်"""
+    try:
+        account_info = client.get_account(recvWindow=60000)
+        balances = account_info.get('balances', [])
+        
+        for item in balances:
+            asset = item['asset']
+            free_bal = float(item['free'])
+            
+            if asset != 'USDT' and free_bal > 0:
+                symbol = f"{asset}USDT"
+                try:
+                    ticker = float(client.get_symbol_ticker(symbol=symbol)['price'])
+                    total_usdt_val = free_bal * ticker
+                    
+                    # Minimum Trade Value (5 USDT) ထက် ကြီးပါက Auto Sell ပြုလုပ်မည်
+                    if total_usdt_val >= 5.0:
+                        qty_to_sell = format_quantity(symbol, free_bal * 0.99)
+                        if qty_to_sell > 0:
+                            client.create_order(
+                                symbol=symbol,
+                                side='SELL',
+                                type='MARKET',
+                                quantity=qty_to_sell,
+                                recvWindow=60000
+                            )
+                            print(f"🧹 Cleaned leftover balance: Sold {qty_to_sell} {asset} back to USDT")
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"Sweep Balances Error: {e}")
+
 # ---------------------------------------------------------
 # 4. Triangular Arbitrage Core Logic
 # ---------------------------------------------------------
 def run_arbitrage_bot():
-    print("Starting Binance Spot Arbitrage Bot...")
+    print("Starting Binance Spot Arbitrage Bot ($100 Fixed Capital)...")
     sync_server_time()
-    send_telegram("🚀 *Binance Arbitrage Bot (Slippage & Balance Protection Fixed) စတင်လည်ပတ်နေပါပြီ။*")
+    send_telegram("🚀 *Binance Arbitrage Bot ($100 Fixed Capital & Auto-Sweep) စတင်လည်ပတ်နေပါပြီ။*")
     
     FEE_FACTOR = 0.999           # Binance Spot Fee 0.1%
     MIN_PROFIT_THRESHOLD = 0.02  # Net Fee နှုတ်ပြီး အနည်းဆုံး 0.02 USDT မြတ်မှ လုပ်မည်
-    MIN_REQUIRED_USDT = 10.0     
+    TRADE_CAPITAL = 100.0        # Trade တိုင်းအတွက် $100 USDT ပုံသေ သတ်မှတ်ခြင်း
 
     triangles = [
         {'base': 'BTCUSDT', 'cross': 'ETHBTC', 'exit': 'ETHUSDT', 'coin1': 'BTC', 'coin2': 'ETH'},
@@ -133,15 +166,15 @@ def run_arbitrage_bot():
     while True:
         try:
             sync_server_time()
+            sweep_to_usdt()  # Trade မစမီ အခြား Coin လက်ကျန်များကို USDT သို့ ပြန်ပြောင်းမည်
+            
             total_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
-            print(f"\nCurrent Total USDT Balance: {total_usdt_balance:.2f} USDT")
+            print(f"\nCurrent Total USDT Balance: {total_usdt_balance:.2f} USDT | Active Trade Capital: {TRADE_CAPITAL:.2f} USDT")
 
-            if total_usdt_balance < MIN_REQUIRED_USDT:
-                print(f"USDT Balance မလုံလောက်ပါ။ လက်ရှိ: {total_usdt_balance:.2f} USDT")
+            if total_usdt_balance < TRADE_CAPITAL:
+                print(f"USDT Balance မလုံလောက်ပါ။ အနည်းဆုံး {TRADE_CAPITAL} USDT ရှိရန် လိုအပ်ပါသည်။")
                 time.sleep(10)
                 continue
-
-            TRADE_CAPITAL = min(100.0, total_usdt_balance * 0.95)
 
             for t in triangles:
                 try:
@@ -168,16 +201,20 @@ def run_arbitrage_bot():
 
                         print(f"⚡ Arbitrage Opportunity Found! Expected Net Profit: {potential_profit:.4f} USDT")
 
-                        # Leg 1 Execution (BUY BTC)
-                        order1 = client.create_order(symbol=t['base'], side='BUY', type='MARKET', quantity=q1, recvWindow=60000)
-                        print(f"[Leg 1] Executed BUY {t['base']} Qty: {q1}")
+                        # Leg 1 Execution (BUY BTC with $100 USDT)
+                        order1 = client.create_order(
+                            symbol=t['base'], 
+                            side='BUY', 
+                            type='MARKET', 
+                            quoteOrderQty=TRADE_CAPITAL, 
+                            recvWindow=60000
+                        )
+                        print(f"[Leg 1] Executed BUY {t['base']} with {TRADE_CAPITAL} USDT")
 
-                        # Leg 2 Execution (BUY Cross Asset using exact BTC quoteOrderQty)
+                        # Leg 2 Execution (BUY Cross Asset using BTC balance)
                         try:
                             time.sleep(0.4)
                             actual_btc_bal = float(client.get_asset_balance(asset=t['coin1'], recvWindow=60000)['free'])
-                            
-                            # 98.5% of BTC balance to avoid any precision/slippage issue
                             btc_to_spend = round(actual_btc_bal * 0.985, 8) 
                             
                             order2 = client.create_order(
