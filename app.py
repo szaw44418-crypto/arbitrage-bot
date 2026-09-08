@@ -58,7 +58,7 @@ def sync_server_time():
         print(f"Time Sync Error: {e}")
 
 # ---------------------------------------------------------
-# 4. LOT_SIZE Precision Helper Function (-1013 Error ပြင်ဆင်ရန်)
+# 4. LOT_SIZE & MARKET_LOT_SIZE Precision Helper Function
 # ---------------------------------------------------------
 symbol_info_cache = {}
 
@@ -78,8 +78,8 @@ def get_symbol_filter(symbol, filter_type):
     return None
 
 def format_quantity(symbol, quantity):
-    """Binance LOT_SIZE stepSize အလိုက် ပမာဏကို တိကျစွာ Round ဖြတ်ပေးသည်"""
-    lot_size_filter = get_symbol_filter(symbol, 'LOT_SIZE')
+    """MARKET_LOT_SIZE သို့မဟုတ် LOT_SIZE အလိုက် ပမာဏကို တိကျစွာ Round ဖြတ်ပေးသည်"""
+    lot_size_filter = get_symbol_filter(symbol, 'MARKET_LOT_SIZE') or get_symbol_filter(symbol, 'LOT_SIZE')
     if not lot_size_filter:
         return quantity
 
@@ -95,12 +95,29 @@ def format_quantity(symbol, quantity):
     return math.floor(quantity * factor) / factor
 
 # ---------------------------------------------------------
-# 5. Triangular Arbitrage Core Logic
+# 5. Emergency Rollback Function (ဝယ်ပြီး ကျန်ခဲ့ပါက USDT သို့ အလိုအလျောက် ပြန်ရောင်းပေးရန်)
+# ---------------------------------------------------------
+def emergency_rollback(asset_to_sell, target_symbol):
+    try:
+        time.sleep(0.5)
+        bal = float(client.get_asset_balance(asset=asset_to_sell, recvWindow=60000)['free'])
+        if bal > 0:
+            formatted_qty = format_quantity(target_symbol, bal * 0.99)
+            if formatted_qty > 0:
+                client.create_order(symbol=target_symbol, side='SELL', type='MARKET', quantity=formatted_qty, recvWindow=60000)
+                msg = f"🚨 *Emergency Rollback Executed:* Sold {formatted_qty} of `{asset_to_sell}` back to USDT via `{target_symbol}`"
+                print(msg)
+                send_telegram(msg)
+    except Exception as err:
+        print(f"Rollback failed for {asset_to_sell}: {err}")
+
+# ---------------------------------------------------------
+# 6. Triangular Arbitrage Core Logic
 # ---------------------------------------------------------
 def run_arbitrage_bot():
     print("Starting Binance Spot Arbitrage Bot...")
     sync_server_time()
-    send_telegram("🚀 *Binance Arbitrage Bot (Dynamic Capital Mode) စတင်လည်ပတ်နေပါပြီ။*")
+    send_telegram("🚀 *Binance Arbitrage Bot (Optimized Market Execution) စတင်လည်ပတ်နေပါပြီ။*")
     
     FEE_FACTOR = 0.999           # Binance Spot Fee 0.1% (Trade တိုင်းအတွက် 99.9% သာကျန်မည်)
     MIN_PROFIT_THRESHOLD = 0.02  # Net Fee နှုတ်ပြီး အနည်းဆုံး 0.02 USDT မြတ်မှ လုပ်မည်
@@ -126,13 +143,11 @@ def run_arbitrage_bot():
             total_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
             print(f"\nCurrent Total USDT Balance: {total_usdt_balance:.2f} USDT")
 
-            # Binance Minimum Limit (10 USDT) အောက် နည်းပါက ခဏစောင့်မည်
             if total_usdt_balance < MIN_REQUIRED_USDT:
-                print(f"USDT Balance မလုံလောက်ပါ။ လက်ရှိ: {total_usdt_balance:.2f} USDT (အနည်းဆုံး {MIN_REQUIRED_USDT} USDT လိုအပ်ပါသည်)")
+                print(f"USDT Balance မလုံလောက်ပါ။ လက်ရှိ: {total_usdt_balance:.2f} USDT")
                 time.sleep(10)
                 continue
 
-            # Balance ၁၀၀ ထက်ကျော်ပါက ၁၀၀ အတိအကျ သုံးမည်၊ ၁၀၀ အောက်နည်းပါက ရှိသော Balance ၏ 95% ကို Capital အဖြစ် သုံးမည်
             TRADE_CAPITAL = min(100.0, total_usdt_balance * 0.95)
             print(f"Active Trade Capital: {TRADE_CAPITAL:.2f} USDT")
 
@@ -142,7 +157,7 @@ def run_arbitrage_bot():
                     ticker_cross = float(client.get_symbol_ticker(symbol=t['cross'])['price'])
                     ticker_exit = float(client.get_symbol_ticker(symbol=t['exit'])['price'])
 
-                    # Fee (0.1% x 3 legs) ပါ ထည့်သွင်းတွက်ချက်သော Net Profit Estimate
+                    # Fee နှုတ်ပြီး Net Profit တွက်ချက်ခြင်း
                     raw_q1 = TRADE_CAPITAL / ticker_base
                     q1 = format_quantity(t['base'], raw_q1)
                     q1_after_fee = q1 * FEE_FACTOR
@@ -156,32 +171,46 @@ def run_arbitrage_bot():
 
                     print(f"Checking Path: USDT -> {t['coin1']} -> {t['coin2']} | Capital: {TRADE_CAPITAL:.2f} | Net Est. Profit: {potential_profit:.4f} USDT")
 
-                    # အမြတ်ရှိပါက Trade စတင်မည်
                     if potential_profit > MIN_PROFIT_THRESHOLD:
                         start_time = time.time()
                         initial_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
 
                         print(f"⚡ Arbitrage Opportunity Found! Expected Net Profit: {potential_profit:.4f} USDT")
 
-                        # Leg 1: BUY Base Coin
+                        # Leg 1: BUY Base Coin (BTC)
                         order1 = client.create_order(symbol=t['base'], side='BUY', type='MARKET', quantity=q1, recvWindow=60000)
                         print(f"[Leg 1] Executed BUY {t['base']} Qty: {q1}")
 
-                        # Leg 2: BUY Cross Coin (အမှန်တကယ် လက်ကျန်ရှိသော Coin1 Balance ဖြင့် ဝယ်မည်)
-                        time.sleep(0.2)
-                        actual_coin1_bal = float(client.get_asset_balance(asset=t['coin1'], recvWindow=60000)['free'])
-                        q2_formatted = format_quantity(t['cross'], actual_coin1_bal / ticker_cross)
-                        order2 = client.create_order(symbol=t['cross'], side='BUY', type='MARKET', quantity=q2_formatted, recvWindow=60000)
-                        print(f"[Leg 2] Executed BUY {t['cross']} Qty: {q2_formatted}")
+                        # Leg 2 Execution
+                        try:
+                            time.sleep(0.3)
+                            actual_coin1_bal = float(client.get_asset_balance(asset=t['coin1'], recvWindow=60000)['free'])
+                            # Safety factor 0.995 ဖြင့် insufficient balance မဖြစ်အောင် ကာကွယ်ခြင်း
+                            q2_formatted = format_quantity(t['cross'], (actual_coin1_bal * 0.995) / ticker_cross)
+                            order2 = client.create_order(symbol=t['cross'], side='BUY', type='MARKET', quantity=q2_formatted, recvWindow=60000)
+                            print(f"[Leg 2] Executed BUY {t['cross']} Qty: {q2_formatted}")
+                        except Exception as e2:
+                            err_msg = f"⚠️ *Leg 2 Failed:* `{e2}`. Reverting Leg 1..."
+                            print(err_msg)
+                            send_telegram(err_msg)
+                            emergency_rollback(t['coin1'], t['base'])  # BTC ကို USDT သို့ ပြန်ရောင်းမည်
+                            continue
 
-                        # Leg 3: SELL Exit Coin (အမှန်တကယ် လက်ကျန်ရှိသော Coin2 Balance ကို ရောင်းမည်)
-                        time.sleep(0.2)
-                        actual_coin2_bal = float(client.get_asset_balance(asset=t['coin2'], recvWindow=60000)['free'])
-                        q3_formatted = format_quantity(t['exit'], actual_coin2_bal)
-                        order3 = client.create_order(symbol=t['exit'], side='SELL', type='MARKET', quantity=q3_formatted, recvWindow=60000)
-                        print(f"[Leg 3] Executed SELL {t['exit']} Qty: {q3_formatted}")
+                        # Leg 3 Execution
+                        try:
+                            time.sleep(0.3)
+                            actual_coin2_bal = float(client.get_asset_balance(asset=t['coin2'], recvWindow=60000)['free'])
+                            q3_formatted = format_quantity(t['exit'], actual_coin2_bal * 0.995)
+                            order3 = client.create_order(symbol=t['exit'], side='SELL', type='MARKET', quantity=q3_formatted, recvWindow=60000)
+                            print(f"[Leg 3] Executed SELL {t['exit']} Qty: {q3_formatted}")
+                        except Exception as e3:
+                            err_msg = f"⚠️ *Leg 3 Failed:* `{e3}`. Reverting Leg 2..."
+                            print(err_msg)
+                            send_telegram(err_msg)
+                            emergency_rollback(t['coin2'], t['exit'])  # Coin2 ကို USDT သို့ ပြန်ရောင်းမည်
+                            continue
 
-                        # Cycle Summary & စာရင်းစစ်ခြင်း
+                        # Summary
                         time.sleep(0.5)
                         end_time = time.time()
                         final_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
@@ -190,7 +219,6 @@ def run_arbitrage_bot():
                         profit_percentage = (realized_profit / TRADE_CAPITAL) * 100
                         duration = end_time - start_time
 
-                        # Telegram Cycle Report
                         report_msg = (
                             f"📊 *Arbitrage Cycle Summary Report*\n"
                             f"----------------------------------\n"
@@ -222,7 +250,7 @@ def run_arbitrage_bot():
         time.sleep(3)
 
 # ---------------------------------------------------------
-# 6. Render Web Service & Background Bot Execution
+# 7. Render Web Service & Background Bot Execution
 # ---------------------------------------------------------
 if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_arbitrage_bot)
