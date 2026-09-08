@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Binance Spot Arbitrage Bot ($100 Fixed Capital & Asynchronous Cleanup) is active and running!"
+    return "Binance Advanced Triangular Arbitrage Bot ($100 Fixed Capital & Safety Controls) is active and running!"
 
 # ---------------------------------------------------------
 # 2. Binance & Telegram Credentials Configuration
@@ -32,7 +32,7 @@ client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
 client.API_URL = f"{SPOT_BASE}/api"
 
 # ---------------------------------------------------------
-# 3. Helper Functions
+# 3. Helper Functions & Order Book Depth Protection
 # ---------------------------------------------------------
 def send_telegram(message):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -91,6 +91,54 @@ def format_quantity(symbol, quantity):
     else:
         return float(f"{formatted:.{precision}f}")
 
+def get_market_execution_price(symbol, side, target_amount):
+    """
+    Order Book Depth ကို အခြေခံ၍ Market Order တင်ပါက ဖြစ်ပေါ်လာမည့် 
+    Actual Average Execution Price ကို တိကျစွာ တွက်ချက်ပေးသည် (Slippage ကာကွယ်ရန်)
+    """
+    try:
+        depth = client.get_order_book(symbol=symbol, limit=20)
+        # side == 'BUY' လျှင် Asks စာရင်းကို ယူရမည် (Sellers တွေရဲ့ ဈေး)
+        # side == 'SELL' လျှင် Bids စာရင်းကို ယူရမည် (Buyers တွေရဲ့ ဈေး)
+        orders = depth['asks'] if side == 'BUY' else depth['bids']
+        
+        remaining_budget_or_qty = target_amount
+        total_cost = 0.0
+        total_got = 0.0
+
+        for price_str, qty_str in orders:
+            price = float(price_str)
+            qty = float(qty_str)
+
+            if side == 'BUY':
+                # target_amount သည် USDT (Quote Asset) ပမာဏ ဖြစ်သည်
+                max_affordable_qty = remaining_budget_or_qty / price
+                take_qty = min(qty, max_affordable_qty)
+                
+                total_cost += take_qty * price
+                total_got += take_qty
+                remaining_budget_or_qty -= (take_qty * price)
+
+                if remaining_budget_or_qty <= 0.0000001:
+                    break
+            else:
+                # target_amount သည် Base Asset ပမာဏ ဖြစ်သည်
+                take_qty = min(qty, remaining_budget_or_qty)
+                
+                total_cost += take_qty * price
+                total_got += take_qty
+                remaining_budget_or_qty -= take_qty
+
+                if remaining_budget_or_qty <= 0.0000001:
+                    break
+
+        if total_got > 0:
+            return total_cost / total_got
+        return float(orders[0][0])
+    except Exception:
+        # Fallback to standard ticker if order book fetch fails
+        return float(client.get_symbol_ticker(symbol=symbol)['price'])
+
 def emergency_rollback(asset_to_sell, target_symbol):
     try:
         time.sleep(0.5)
@@ -106,7 +154,6 @@ def emergency_rollback(asset_to_sell, target_symbol):
         print(f"Rollback failed for {asset_to_sell}: {err}")
 
 def sweep_to_usdt():
-    """USDT မဟုတ်သော အခြား Coin ကျန်ကြွင်း Balance များကို USDT သို့ အလိုအလျောက် ပြန်ရောင်းပေးသည်"""
     try:
         account_info = client.get_account(recvWindow=60000)
         balances = account_info.get('balances', [])
@@ -143,15 +190,15 @@ def initial_cleanup_task():
     print("✅ Initial background account cleanup finished.")
 
 # ---------------------------------------------------------
-# 4. Triangular Arbitrage Core Logic
+# 4. Upgraded Triangular Arbitrage Core Logic
 # ---------------------------------------------------------
 def run_arbitrage_bot():
-    print("Starting Binance Spot Arbitrage Bot ($100 Fixed Capital)...")
+    print("Starting Advanced Binance Spot Arbitrage Bot...")
     sync_server_time()
-    send_telegram("🚀 *Binance Arbitrage Bot ($100 Fixed Capital Mode) စတင်လည်ပတ်နေပါပြီ။*")
+    send_telegram("🚀 *Advanced Binance Arbitrage Bot (Slippage Protection Enabled) စတင်လည်ပတ်နေပါပြီ။*")
     
-    FEE_FACTOR = 0.999           # Binance Spot Fee 0.1%
-    MIN_PROFIT_THRESHOLD = 0.02  # Net Fee နှုတ်ပြီး အနည်းဆုံး 0.02 USDT မြတ်မှ လုပ်မည်
+    FEE_FACTOR = 0.999           # Binance Spot Fee 0.1% per trade
+    MIN_PROFIT_THRESHOLD = 0.25  # Slippage နှင့် Fee ကာကွယ်ရန် အနည်းဆုံး 0.25 USDT အမြတ်ထွက်မှသာ လုပ်မည်
     TRADE_CAPITAL = 100.0        # Trade တိုင်းအတွက် $100 USDT ပုံသေ သတ်မှတ်ခြင်း
 
     triangles = [
@@ -181,30 +228,31 @@ def run_arbitrage_bot():
 
             for t in triangles:
                 try:
-                    ticker_base = float(client.get_symbol_ticker(symbol=t['base'])['price'])
-                    ticker_cross = float(client.get_symbol_ticker(symbol=t['cross'])['price'])
-                    ticker_exit = float(client.get_symbol_ticker(symbol=t['exit'])['price'])
-
-                    raw_q1 = TRADE_CAPITAL / ticker_base
+                    # Order Book Depth ကို အခြေခံ၍ Slippage ပါ ထည့်သွင်းတွက်ချက်ထားသော Execution Price များကို ရယူခြင်း
+                    exec_price_base = get_market_execution_price(t['base'], 'BUY', TRADE_CAPITAL)
+                    
+                    raw_q1 = TRADE_CAPITAL / exec_price_base
                     q1 = format_quantity(t['base'], raw_q1)
                     q1_after_fee = q1 * FEE_FACTOR
 
-                    raw_q2 = q1_after_fee / ticker_cross
+                    exec_price_cross = get_market_execution_price(t['cross'], 'BUY', q1_after_fee)
+                    raw_q2 = q1_after_fee / exec_price_cross
                     q2 = format_quantity(t['cross'], raw_q2)
                     q2_after_fee = q2 * FEE_FACTOR
 
-                    estimated_usdt_back = (q2_after_fee * ticker_exit) * FEE_FACTOR
+                    exec_price_exit = get_market_execution_price(t['exit'], 'SELL', q2_after_fee)
+                    estimated_usdt_back = (q2_after_fee * exec_price_exit) * FEE_FACTOR
                     potential_profit = estimated_usdt_back - TRADE_CAPITAL
 
-                    print(f"Checking Path: USDT -> {t['coin1']} -> {t['coin2']} | Capital: {TRADE_CAPITAL:.2f} | Net Est. Profit: {potential_profit:.4f} USDT")
+                    print(f"Checking Path: USDT -> {t['coin1']} -> {t['coin2']} | Est. Net Profit: {potential_profit:.4f} USDT")
 
                     if potential_profit > MIN_PROFIT_THRESHOLD:
                         start_time = time.time()
                         initial_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
 
-                        print(f"⚡ Arbitrage Opportunity Found! Expected Net Profit: {potential_profit:.4f} USDT")
+                        print(f"⚡ High-Confidence Arbitrage Found! Expected Net Profit: {potential_profit:.4f} USDT")
 
-                        # Leg 1 Execution (BUY BTC with $100 USDT)
+                        # Leg 1 Execution
                         order1 = client.create_order(
                             symbol=t['base'], 
                             side='BUY', 
@@ -214,9 +262,9 @@ def run_arbitrage_bot():
                         )
                         print(f"[Leg 1] Executed BUY {t['base']} with {TRADE_CAPITAL} USDT")
 
-                        # Leg 2 Execution (BUY Cross Asset using BTC balance)
+                        # Leg 2 Execution
                         try:
-                            time.sleep(0.4)
+                            time.sleep(0.3)
                             actual_btc_bal = float(client.get_asset_balance(asset=t['coin1'], recvWindow=60000)['free'])
                             btc_to_spend = round(actual_btc_bal * 0.985, 8) 
                             
@@ -227,7 +275,7 @@ def run_arbitrage_bot():
                                 quoteOrderQty=btc_to_spend, 
                                 recvWindow=60000
                             )
-                            print(f"[Leg 2] Executed BUY {t['cross']} QuoteQty: {btc_to_spend} BTC")
+                            print(f"[Leg 2] Executed BUY {t['cross']} QuoteQty: {btc_to_spend}")
                         except Exception as e2:
                             err_msg = f"⚠️ *Leg 2 Failed:* `{e2}`. Reverting Leg 1..."
                             print(err_msg)
@@ -235,9 +283,9 @@ def run_arbitrage_bot():
                             emergency_rollback(t['coin1'], t['base'])
                             continue
 
-                        # Leg 3 Execution (SELL Coin2 for USDT)
+                        # Leg 3 Execution
                         try:
-                            time.sleep(0.4)
+                            time.sleep(0.3)
                             actual_coin2_bal = float(client.get_asset_balance(asset=t['coin2'], recvWindow=60000)['free'])
                             q3_formatted = format_quantity(t['exit'], actual_coin2_bal * 0.99)
                             order3 = client.create_order(symbol=t['exit'], side='SELL', type='MARKET', quantity=q3_formatted, recvWindow=60000)
@@ -249,8 +297,8 @@ def run_arbitrage_bot():
                             emergency_rollback(t['coin2'], t['exit'])
                             continue
 
-                        # Summary
-                        time.sleep(0.5)
+                        # Summary Report
+                        time.sleep(0.4)
                         end_time = time.time()
                         final_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
                         
@@ -273,11 +321,10 @@ def run_arbitrage_bot():
                         print(report_msg)
                         send_telegram(report_msg)
 
-                        # Trade တစ်ခု ပြီးမြောက်သွားမှသာ ကျန်ရှိသော Coin အကြွင်းအကျန်များကို ရှင်းထုတ်မည်
                         sweep_to_usdt()
 
                     else:
-                        print("No profitable opportunity found after fees.")
+                        print("Profit below minimum safe threshold or negative.")
 
                 except BinanceAPIException as e:
                     err_msg = f"⚠️ *Binance Trade Error:* `{e.message}`"
@@ -295,17 +342,14 @@ def run_arbitrage_bot():
 # 5. Render Web Service Launch & Asynchronous Background Threads
 # ---------------------------------------------------------
 def start_bot_threads():
-    # ၁။ Coin အဟောင်းများ ရှင်းလင်းခြင်းကို Background Thread သီးသန့်ဖြင့် ဆောင်ရွက်မည်
     cleanup_thread = threading.Thread(target=initial_cleanup_task)
     cleanup_thread.daemon = True
     cleanup_thread.start()
 
-    # ၂။ Arbitrage Bot Core Loop ကို Background Thread ဖြင့် ပုံမှန်အတိုင်း စတင်မည်
     bot_thread = threading.Thread(target=run_arbitrage_bot)
     bot_thread.daemon = True
     bot_thread.start()
 
-# Server စတင်ပွင့်လာသည်နှင့် Thread များကို တစ်ပြိုင်နက် ဖန်တီးပေးမည်
 start_bot_threads()
 
 if __name__ == "__main__":
