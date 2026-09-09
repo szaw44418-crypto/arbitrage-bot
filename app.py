@@ -88,13 +88,13 @@ def format_quantity(symbol, quantity):
     precision = int(round(-math.log10(step_size)))
     return round(round(quantity / step_size) * step_size, precision)
 
-# 3. Technical Analysis (RSI Calculation - Fixed NaN Handling)
-def calculate_rsi(symbol, interval=Client.KLINE_INTERVAL_1HOUR, period=14):
+# 3. Technical Analysis (RSI Calculation - Fixed with 15m Interval & NaN Handling)
+def calculate_rsi(symbol, interval=Client.KLINE_INTERVAL_15MINUTE, period=14):
     try:
         klines = client.get_klines(symbol=symbol, interval=interval, limit=50)
         if not klines or len(klines) < period + 5:
-            print("⚠️ Not enough klines data from Testnet.")
-            return None
+            print("⚠️ Not enough klines data from Testnet. Using default Sideways RSI.")
+            return 50.0  # Data မလုံလောက်ပါက Sideways (50) သတ်မှတ်ပေးမည်
             
         df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'num_trades', 'taker_buy_base', 'taker_buy_quote', 'ignore'])
         df['close'] = df['close'].astype(float)
@@ -108,11 +108,11 @@ def calculate_rsi(symbol, interval=Client.KLINE_INTERVAL_1HOUR, period=14):
         
         latest_rsi = rsi.iloc[-1]
         if pd.isna(latest_rsi):
-            return 50.0  # Testnet Data Error ဖြစ်ပါက Default အနေဖြင့် Sideways (50) သတ်မှတ်ပေးခြင်း
+            return 50.0
         return latest_rsi
     except Exception as e:
         print(f"RSI Calculation Error: {e}")
-        return None
+        return 50.0
 
 # 4. Grid Level Calculation & Order Placement
 def setup_grid_orders(symbol):
@@ -167,7 +167,7 @@ def run_ta_grid_bot():
         current_rsi = calculate_rsi(SYMBOL)
         
         if current_rsi is not None:
-            print(f"Current {SYMBOL} RSI (1H): {current_rsi:.2f}")
+            print(f"Current {SYMBOL} RSI (15M): {current_rsi:.2f}")
             
             if 40 <= current_rsi <= 60:
                 print("🟢 Market is Sideways. Initializing ETH Grid Strategy...")
