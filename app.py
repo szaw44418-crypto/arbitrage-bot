@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Binance Advanced Triangular Arbitrage Bot (With 502 Bad Gateway Handler) is active!"
+    return "Binance Advanced Triangular Arbitrage Bot ($100 Strict Capital Control) is active!"
 
 # ---------------------------------------------------------
 # 2. Binance & Telegram Credentials Configuration
@@ -30,6 +30,8 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
 
 client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
 client.API_URL = f"{SPOT_BASE}/api"
+
+TRADE_CAPITAL = 100.0  # Bot အတွက် သုံးမည့် ပုံသေ மூலဓန ($100)
 
 # ---------------------------------------------------------
 # 3. Helper Functions & 502 Gateway Retry Wrapper
@@ -48,7 +50,6 @@ def send_telegram(message):
             print(f"Telegram Sending Error: {e}")
 
 def safe_api_call(func, *args, **kwargs):
-    """Binance Testnet 502 Bad Gateway နှင့် Network Error များအတွက် Retry လုပ်ပေးသော Function"""
     max_retries = 3
     delay = 1.5
     for attempt in range(max_retries):
@@ -59,10 +60,9 @@ def safe_api_call(func, *args, **kwargs):
             if "502" in err_str or "504" in err_str or "Bad Gateway" in err_str or "<html>" in err_str:
                 print(f"⚠️ Binance Gateway Error (Attempt {attempt+1}/{max_retries}). Retrying in {delay}s...")
                 time.sleep(delay)
-                delay *= 2  # Exponential backoff
+                delay *= 2
             else:
                 raise e
-    print("❌ Max retries reached for API call.")
     return None
 
 def sync_server_time():
@@ -161,19 +161,26 @@ def emergency_rollback(asset_to_sell, target_symbol):
                 formatted_qty = format_quantity(target_symbol, bal * 0.99)
                 if formatted_qty > 0:
                     safe_api_call(client.create_order, symbol=target_symbol, side='SELL', type='MARKET', quantity=formatted_qty, recvWindow=60000)
-                    msg = f"🚨 *Emergency Rollback Executed:* Sold {formatted_qty} of `{asset_to_sell}` back to USDT via `{target_symbol}`"
+                    msg = f"🚨 *Emergency Rollback:* Sold {formatted_qty} of `{asset_to_sell}` back to USDT via `{target_symbol}`"
                     print(msg)
                     send_telegram(msg)
     except Exception as err:
         print(f"Rollback failed for {asset_to_sell}: {err}")
 
-def sweep_to_usdt():
+def enforce_strict_capital_limit():
+    """
+    အကောင့်ထဲတွင် ရှိသမျှ အခြား Coin လက်ကျန်များကို USDT သို့ ရှင်းထုတ်မည်။
+    သို့သော် USDT လက်ကျန်စုစုပေါင်းသည် 100 USDT ထက် ကျော်လွန်နေပါက (အမြတ်ငွေများ ထွက်လာပါက) 
+    100 USDT တိတိသာ ချန်ထားခဲ့ပြီး ပိုနေသောငွေများကို သိမ်းဆည်းရန် သတိပေးချက်ထုတ်ပေးမည် (သို့မဟုတ်) 
+    Testnet ပေါ်တွင် ပိုငွေများကို ဖယ်ရှားရန် စီမံပေးသည်။
+    """
     try:
         account_info = safe_api_call(client.get_account, recvWindow=60000)
         if not account_info:
             return
         balances = account_info.get('balances', [])
         
+        # ၁။ အခြားလက်ကျန် Coin များကို USDT သို့ အရင်ရှင်းမည်
         for item in balances:
             asset = item['asset']
             free_bal = float(item['free'])
@@ -184,34 +191,43 @@ def sweep_to_usdt():
                     ticker_res = safe_api_call(client.get_symbol_ticker, symbol=symbol)
                     if ticker_res:
                         ticker = float(ticker_res['price'])
-                        total_usdt_val = free_bal * ticker
-                        
-                        if total_usdt_val >= 5.0:
+                        if (free_bal * ticker) >= 2.0:
                             qty_to_sell = format_quantity(symbol, free_bal * 0.99)
                             if qty_to_sell > 0:
                                 safe_api_call(client.create_order, symbol=symbol, side='SELL', type='MARKET', quantity=qty_to_sell, recvWindow=60000)
-                                print(f"🧹 Cleaned leftover balance: Sold {qty_to_sell} {asset} back to USDT")
+                                print(f"🧹 Swept leftover {asset} to USDT.")
                 except Exception:
                     pass
+
+        # ၂။ USDT လက်ကျန်ကို စစ်ဆေးပြီး 100 USDT ထက်ကျော်လွန်နေပါက ထိန်းချုပ်ခြင်း
+        time.sleep(1)
+        usdt_res = safe_api_call(client.get_asset_balance, asset='USDT', recvWindow=60000)
+        if usdt_res:
+            current_usdt = float(usdt_res['free'])
+            if current_usdt > TRADE_CAPITAL + 1.0:
+                excess_amount = current_usdt - TRADE_CAPITAL
+                msg = f"⚖️ *Capital Control Alert:* Total USDT is `{current_usdt:.2f}`. Excess profit of `{excess_amount:.2f} USDT` detected. Bot will strictly trade with fixed `{TRADE_CAPITAL} USDT`."
+                print(msg)
+                send_telegram(msg)
+                
     except Exception as e:
-        print(f"Sweep Balances Error: {e}")
+        print(f"Enforce Capital Limit Error: {e}")
 
 def initial_cleanup_task():
-    print("🧹 Initial background account cleanup starting...")
-    sweep_to_usdt()
-    print("✅ Initial background account cleanup finished.")
+    print("🧹 Initial capital synchronization starting...")
+    enforce_strict_capital_limit()
+    print("✅ Initial capital synchronization finished.")
 
 # ---------------------------------------------------------
 # 4. Upgraded Triangular Arbitrage Core Logic
 # ---------------------------------------------------------
 def run_arbitrage_bot():
-    print("Starting Advanced Binance Spot Arbitrage Bot...")
+    print("Starting Advanced Binance Spot Arbitrage Bot ($100 Fixed Mode)...")
     sync_server_time()
-    send_telegram("🚀 *Binance Arbitrage Bot (502 Gateway Protection) စတင်လည်ပတ်နေပါပြီ။*")
+    send_telegram("🚀 *Arbitrage Bot ($100 Strict Control Mode) စတင်လည်ပတ်နေပါပြီ။*")
     
     FEE_FACTOR = 0.999
     MIN_PROFIT_THRESHOLD = 0.25
-    TRADE_CAPITAL = 100.0
 
     triangles = [
         {'base': 'BTCUSDT', 'cross': 'ETHBTC', 'exit': 'ETHUSDT', 'coin1': 'BTC', 'coin2': 'ETH'},
@@ -236,7 +252,7 @@ def run_arbitrage_bot():
                 continue
             
             total_usdt_balance = float(bal_res['free'])
-            print(f"\nCurrent Total USDT Balance: {total_usdt_balance:.2f} USDT | Active Trade Capital: {TRADE_CAPITAL:.2f} USDT")
+            print(f"\nCurrent USDT Balance: {total_usdt_balance:.2f} USDT | Target Trade Capital: {TRADE_CAPITAL:.2f} USDT")
 
             if total_usdt_balance < TRADE_CAPITAL:
                 print(f"USDT Balance မလုံလောက်ပါ။ အနည်းဆုံး {TRADE_CAPITAL} USDT ရှိရန် လိုအပ်ပါသည်။")
@@ -266,9 +282,9 @@ def run_arbitrage_bot():
                         init_res = safe_api_call(client.get_asset_balance, asset='USDT', recvWindow=60000)
                         initial_usdt_balance = float(init_res['free']) if init_res else TRADE_CAPITAL
 
-                        print(f"⚡ High-Confidence Arbitrage Found! Expected Net Profit: {potential_profit:.4f} USDT")
+                        print(f"⚡ High-Confidence Arbitrage Found! Executing with fixed {TRADE_CAPITAL} USDT...")
 
-                        # Leg 1 Execution
+                        # Leg 1 Execution (Strictly using TRADE_CAPITAL = 100)
                         safe_api_call(
                             client.create_order,
                             symbol=t['base'], 
@@ -331,7 +347,7 @@ def run_arbitrage_bot():
                             f"📊 *Arbitrage Cycle Summary Report*\n"
                             f"----------------------------------\n"
                             f"🔄 *Trade Path:* `USDT ➔ {t['coin1']} ➔ {t['coin2']} ➔ USDT`\n"
-                            f"💰 *Capital Used:* `{TRADE_CAPITAL:.2f} USDT`\n"
+                            f"💰 *Capital Used:* `{TRADE_CAPITAL:.2f} USDT` (Strict Fixed)\n"
                             f"📈 *Expected Profit:* `+{potential_profit:.4f} USDT`\n"
                             f"💵 *Actual Net Profit:* `{realized_profit:+.4f} USDT` ({profit_percentage:+.2f}%)\n"
                             f"🏦 *New Total Balance:* `{final_usdt_balance:.2f} USDT`\n"
@@ -341,7 +357,9 @@ def run_arbitrage_bot():
                         )
                         print(report_msg)
                         send_telegram(report_msg)
-                        sweep_to_usdt()
+                        
+                        # Cycle ပြီးတိုင်း ပိုငွေများကို စစ်ဆေးရှင်းလင်းခြင်း
+                        enforce_strict_capital_limit()
 
                     else:
                         print("Profit below minimum safe threshold or negative.")
