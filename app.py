@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Binance Advanced Triangular Arbitrage Bot ($100 Fixed Capital & Safety Controls) is active and running!"
+    return "Binance Advanced Triangular Arbitrage Bot (With 502 Bad Gateway Handler) is active!"
 
 # ---------------------------------------------------------
 # 2. Binance & Telegram Credentials Configuration
@@ -32,7 +32,7 @@ client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
 client.API_URL = f"{SPOT_BASE}/api"
 
 # ---------------------------------------------------------
-# 3. Helper Functions & Order Book Depth Protection
+# 3. Helper Functions & 502 Gateway Retry Wrapper
 # ---------------------------------------------------------
 def send_telegram(message):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -47,11 +47,30 @@ def send_telegram(message):
         except Exception as e:
             print(f"Telegram Sending Error: {e}")
 
+def safe_api_call(func, *args, **kwargs):
+    """Binance Testnet 502 Bad Gateway နှင့် Network Error များအတွက် Retry လုပ်ပေးသော Function"""
+    max_retries = 3
+    delay = 1.5
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            err_str = str(e)
+            if "502" in err_str or "504" in err_str or "Bad Gateway" in err_str or "<html>" in err_str:
+                print(f"⚠️ Binance Gateway Error (Attempt {attempt+1}/{max_retries}). Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+            else:
+                raise e
+    print("❌ Max retries reached for API call.")
+    return None
+
 def sync_server_time():
     try:
-        server_time = client.get_server_time()
-        local_time = int(time.time() * 1000)
-        client.TIMESTAMP_OFFSET = server_time['serverTime'] - local_time
+        server_time = safe_api_call(client.get_server_time)
+        if server_time:
+            local_time = int(time.time() * 1000)
+            client.TIMESTAMP_OFFSET = server_time['serverTime'] - local_time
     except Exception as e:
         print(f"Time Sync Error: {e}")
 
@@ -60,7 +79,9 @@ symbol_info_cache = {}
 def get_symbol_filter(symbol, filter_type):
     if symbol not in symbol_info_cache:
         try:
-            symbol_info_cache[symbol] = client.get_symbol_info(symbol)
+            info = safe_api_call(client.get_symbol_info, symbol)
+            if info:
+                symbol_info_cache[symbol] = info
         except Exception as e:
             print(f"Error fetching info for {symbol}: {e}")
             return None
@@ -92,16 +113,13 @@ def format_quantity(symbol, quantity):
         return float(f"{formatted:.{precision}f}")
 
 def get_market_execution_price(symbol, side, target_amount):
-    """
-    Order Book Depth ကို အခြေခံ၍ Market Order တင်ပါက ဖြစ်ပေါ်လာမည့် 
-    Actual Average Execution Price ကို တိကျစွာ တွက်ချက်ပေးသည် (Slippage ကာကွယ်ရန်)
-    """
     try:
-        depth = client.get_order_book(symbol=symbol, limit=20)
-        # side == 'BUY' လျှင် Asks စာရင်းကို ယူရမည် (Sellers တွေရဲ့ ဈေး)
-        # side == 'SELL' လျှင် Bids စာရင်းကို ယူရမည် (Buyers တွေရဲ့ ဈေး)
+        depth = safe_api_call(client.get_order_book, symbol=symbol, limit=20)
+        if not depth:
+            ticker_res = safe_api_call(client.get_symbol_ticker, symbol=symbol)
+            return float(ticker_res['price'])
+
         orders = depth['asks'] if side == 'BUY' else depth['bids']
-        
         remaining_budget_or_qty = target_amount
         total_cost = 0.0
         total_got = 0.0
@@ -111,24 +129,18 @@ def get_market_execution_price(symbol, side, target_amount):
             qty = float(qty_str)
 
             if side == 'BUY':
-                # target_amount သည် USDT (Quote Asset) ပမာဏ ဖြစ်သည်
                 max_affordable_qty = remaining_budget_or_qty / price
                 take_qty = min(qty, max_affordable_qty)
-                
                 total_cost += take_qty * price
                 total_got += take_qty
                 remaining_budget_or_qty -= (take_qty * price)
-
                 if remaining_budget_or_qty <= 0.0000001:
                     break
             else:
-                # target_amount သည် Base Asset ပမာဏ ဖြစ်သည်
                 take_qty = min(qty, remaining_budget_or_qty)
-                
                 total_cost += take_qty * price
                 total_got += take_qty
                 remaining_budget_or_qty -= take_qty
-
                 if remaining_budget_or_qty <= 0.0000001:
                     break
 
@@ -136,26 +148,30 @@ def get_market_execution_price(symbol, side, target_amount):
             return total_cost / total_got
         return float(orders[0][0])
     except Exception:
-        # Fallback to standard ticker if order book fetch fails
-        return float(client.get_symbol_ticker(symbol=symbol)['price'])
+        ticker_res = safe_api_call(client.get_symbol_ticker, symbol=symbol)
+        return float(ticker_res['price'])
 
 def emergency_rollback(asset_to_sell, target_symbol):
     try:
         time.sleep(0.5)
-        bal = float(client.get_asset_balance(asset=asset_to_sell, recvWindow=60000)['free'])
-        if bal > 0:
-            formatted_qty = format_quantity(target_symbol, bal * 0.99)
-            if formatted_qty > 0:
-                client.create_order(symbol=target_symbol, side='SELL', type='MARKET', quantity=formatted_qty, recvWindow=60000)
-                msg = f"🚨 *Emergency Rollback Executed:* Sold {formatted_qty} of `{asset_to_sell}` back to USDT via `{target_symbol}`"
-                print(msg)
-                send_telegram(msg)
+        bal_res = safe_api_call(client.get_asset_balance, asset=asset_to_sell, recvWindow=60000)
+        if bal_res:
+            bal = float(bal_res['free'])
+            if bal > 0:
+                formatted_qty = format_quantity(target_symbol, bal * 0.99)
+                if formatted_qty > 0:
+                    safe_api_call(client.create_order, symbol=target_symbol, side='SELL', type='MARKET', quantity=formatted_qty, recvWindow=60000)
+                    msg = f"🚨 *Emergency Rollback Executed:* Sold {formatted_qty} of `{asset_to_sell}` back to USDT via `{target_symbol}`"
+                    print(msg)
+                    send_telegram(msg)
     except Exception as err:
         print(f"Rollback failed for {asset_to_sell}: {err}")
 
 def sweep_to_usdt():
     try:
-        account_info = client.get_account(recvWindow=60000)
+        account_info = safe_api_call(client.get_account, recvWindow=60000)
+        if not account_info:
+            return
         balances = account_info.get('balances', [])
         
         for item in balances:
@@ -165,20 +181,16 @@ def sweep_to_usdt():
             if asset != 'USDT' and free_bal > 0:
                 symbol = f"{asset}USDT"
                 try:
-                    ticker = float(client.get_symbol_ticker(symbol=symbol)['price'])
-                    total_usdt_val = free_bal * ticker
-                    
-                    if total_usdt_val >= 5.0:
-                        qty_to_sell = format_quantity(symbol, free_bal * 0.99)
-                        if qty_to_sell > 0:
-                            client.create_order(
-                                symbol=symbol,
-                                side='SELL',
-                                type='MARKET',
-                                quantity=qty_to_sell,
-                                recvWindow=60000
-                            )
-                            print(f"🧹 Cleaned leftover balance: Sold {qty_to_sell} {asset} back to USDT")
+                    ticker_res = safe_api_call(client.get_symbol_ticker, symbol=symbol)
+                    if ticker_res:
+                        ticker = float(ticker_res['price'])
+                        total_usdt_val = free_bal * ticker
+                        
+                        if total_usdt_val >= 5.0:
+                            qty_to_sell = format_quantity(symbol, free_bal * 0.99)
+                            if qty_to_sell > 0:
+                                safe_api_call(client.create_order, symbol=symbol, side='SELL', type='MARKET', quantity=qty_to_sell, recvWindow=60000)
+                                print(f"🧹 Cleaned leftover balance: Sold {qty_to_sell} {asset} back to USDT")
                 except Exception:
                     pass
     except Exception as e:
@@ -195,11 +207,11 @@ def initial_cleanup_task():
 def run_arbitrage_bot():
     print("Starting Advanced Binance Spot Arbitrage Bot...")
     sync_server_time()
-    send_telegram("🚀 *Advanced Binance Arbitrage Bot (Slippage Protection Enabled) စတင်လည်ပတ်နေပါပြီ။*")
+    send_telegram("🚀 *Binance Arbitrage Bot (502 Gateway Protection) စတင်လည်ပတ်နေပါပြီ။*")
     
-    FEE_FACTOR = 0.999           # Binance Spot Fee 0.1% per trade
-    MIN_PROFIT_THRESHOLD = 0.25  # Slippage နှင့် Fee ကာကွယ်ရန် အနည်းဆုံး 0.25 USDT အမြတ်ထွက်မှသာ လုပ်မည်
-    TRADE_CAPITAL = 100.0        # Trade တိုင်းအတွက် $100 USDT ပုံသေ သတ်မှတ်ခြင်း
+    FEE_FACTOR = 0.999
+    MIN_PROFIT_THRESHOLD = 0.25
+    TRADE_CAPITAL = 100.0
 
     triangles = [
         {'base': 'BTCUSDT', 'cross': 'ETHBTC', 'exit': 'ETHUSDT', 'coin1': 'BTC', 'coin2': 'ETH'},
@@ -218,7 +230,12 @@ def run_arbitrage_bot():
         try:
             sync_server_time()
             
-            total_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
+            bal_res = safe_api_call(client.get_asset_balance, asset='USDT', recvWindow=60000)
+            if not bal_res:
+                time.sleep(5)
+                continue
+            
+            total_usdt_balance = float(bal_res['free'])
             print(f"\nCurrent Total USDT Balance: {total_usdt_balance:.2f} USDT | Active Trade Capital: {TRADE_CAPITAL:.2f} USDT")
 
             if total_usdt_balance < TRADE_CAPITAL:
@@ -228,9 +245,7 @@ def run_arbitrage_bot():
 
             for t in triangles:
                 try:
-                    # Order Book Depth ကို အခြေခံ၍ Slippage ပါ ထည့်သွင်းတွက်ချက်ထားသော Execution Price များကို ရယူခြင်း
                     exec_price_base = get_market_execution_price(t['base'], 'BUY', TRADE_CAPITAL)
-                    
                     raw_q1 = TRADE_CAPITAL / exec_price_base
                     q1 = format_quantity(t['base'], raw_q1)
                     q1_after_fee = q1 * FEE_FACTOR
@@ -248,12 +263,14 @@ def run_arbitrage_bot():
 
                     if potential_profit > MIN_PROFIT_THRESHOLD:
                         start_time = time.time()
-                        initial_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
+                        init_res = safe_api_call(client.get_asset_balance, asset='USDT', recvWindow=60000)
+                        initial_usdt_balance = float(init_res['free']) if init_res else TRADE_CAPITAL
 
                         print(f"⚡ High-Confidence Arbitrage Found! Expected Net Profit: {potential_profit:.4f} USDT")
 
                         # Leg 1 Execution
-                        order1 = client.create_order(
+                        safe_api_call(
+                            client.create_order,
                             symbol=t['base'], 
                             side='BUY', 
                             type='MARKET', 
@@ -265,10 +282,12 @@ def run_arbitrage_bot():
                         # Leg 2 Execution
                         try:
                             time.sleep(0.3)
-                            actual_btc_bal = float(client.get_asset_balance(asset=t['coin1'], recvWindow=60000)['free'])
+                            btc_res = safe_api_call(client.get_asset_balance, asset=t['coin1'], recvWindow=60000)
+                            actual_btc_bal = float(btc_res['free']) if btc_res else 0.0
                             btc_to_spend = round(actual_btc_bal * 0.985, 8) 
                             
-                            order2 = client.create_order(
+                            safe_api_call(
+                                client.create_order,
                                 symbol=t['cross'], 
                                 side='BUY', 
                                 type='MARKET', 
@@ -286,9 +305,10 @@ def run_arbitrage_bot():
                         # Leg 3 Execution
                         try:
                             time.sleep(0.3)
-                            actual_coin2_bal = float(client.get_asset_balance(asset=t['coin2'], recvWindow=60000)['free'])
+                            coin2_res = safe_api_call(client.get_asset_balance, asset=t['coin2'], recvWindow=60000)
+                            actual_coin2_bal = float(coin2_res['free']) if coin2_res else 0.0
                             q3_formatted = format_quantity(t['exit'], actual_coin2_bal * 0.99)
-                            order3 = client.create_order(symbol=t['exit'], side='SELL', type='MARKET', quantity=q3_formatted, recvWindow=60000)
+                            safe_api_call(client.create_order, symbol=t['exit'], side='SELL', type='MARKET', quantity=q3_formatted, recvWindow=60000)
                             print(f"[Leg 3] Executed SELL {t['exit']} Qty: {q3_formatted}")
                         except Exception as e3:
                             err_msg = f"⚠️ *Leg 3 Failed:* `{e3}`. Reverting Leg 2..."
@@ -300,7 +320,8 @@ def run_arbitrage_bot():
                         # Summary Report
                         time.sleep(0.4)
                         end_time = time.time()
-                        final_usdt_balance = float(client.get_asset_balance(asset='USDT', recvWindow=60000)['free'])
+                        final_res = safe_api_call(client.get_asset_balance, asset='USDT', recvWindow=60000)
+                        final_usdt_balance = float(final_res['free']) if final_res else initial_usdt_balance
                         
                         realized_profit = final_usdt_balance - initial_usdt_balance
                         profit_percentage = (realized_profit / TRADE_CAPITAL) * 100
@@ -320,7 +341,6 @@ def run_arbitrage_bot():
                         )
                         print(report_msg)
                         send_telegram(report_msg)
-
                         sweep_to_usdt()
 
                     else:
