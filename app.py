@@ -4,17 +4,16 @@ import math
 import requests
 from threading import Thread
 from flask import Flask
-from decimal import Decimal
 import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
-# 1. Flask Dummy Web Server (Render Free Web Service အတွက် 24 နာရီ အိပ်မသွားအောင် ထိန်းရန်)
+# 1. Flask Dummy Web Server (Render Free Web Service အတွက်)
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 TA-based ETH Spot Grid Bot is running live!"
+    return "🤖 Spot DCA Cycle Bot is running live!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -22,13 +21,8 @@ def run_web():
 
 # 2. Credentials & Configuration
 SPOT_BASE = "https://testnet.binance.vision"
-FUTURES_BASE = "https://demo-fapi.binance.com"
-
 SPOT_API_KEY = os.environ.get("SPOT_API_KEY", "EGMDZzNYcF8aHKsKGxWurbK63sLFdKA42cDEZC3zd8IPkyD3JDEH7btCt4D34aWV")
 SPOT_SECRET_KEY = os.environ.get("SPOT_SECRET_KEY", "YfGOumNKz4MMbZ9MBy7aMB3R6CWxSjVljJvreup8k3BGL5pi1pqc73ieCpOghM8R")
-
-FUTURES_API_KEY = os.environ.get("FUTURES_API_KEY", "TGSwnTW3ukJ7z8fXKeZd4Iz6MBttW6bRA2ODX5rwXC90YWsv5srgcwcL7Bl8XQeA")
-FUTURES_SECRET_KEY = os.environ.get("FUTURES_SECRET_KEY", "b64gEodONh8DMFPsX7Kaj1QRhGdgRM8iCYy8gVPVAO8VNAzWL88DmvZhrVE330Ed")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q7tQP_v3kNVAyslSYD3FsAWz60").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
@@ -37,9 +31,10 @@ client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
 client.API_URL = f"{SPOT_BASE}/api"
 
 SYMBOL = "ETHUSDT"
-TOTAL_CAPITAL = 100.0  # $100 Fixed Budget
-GRID_COUNT = 5         # Grid အကွက်ရေ ၅ ခု (တစ်ကွက်လျှင် $20)
-CAPITAL_PER_GRID = TOTAL_CAPITAL / GRID_COUNT
+TOTAL_CAPITAL = 100.0  # စုစုပေါင်း ရန်ပုံငွေ ($100)
+DCA_STEPS = 3          # DCA အလွှာ ၃ ဆင့်ခွဲဝေမည်
+CAPITAL_PER_STEP = TOTAL_CAPITAL / DCA_STEPS
+PROFIT_TARGET_PCT = 0.015  # အမြတ် ၁.၅% တင်မည်
 
 symbol_info_cache = {}
 
@@ -88,101 +83,136 @@ def format_quantity(symbol, quantity):
     precision = int(round(-math.log10(step_size)))
     return round(round(quantity / step_size) * step_size, precision)
 
-# 3. Technical Analysis (RSI Calculation - Fixed with 15m Interval & NaN Handling)
+def get_usdt_balance():
+    try:
+        account = client.get_account()
+        for b in account['balances']:
+            if b['asset'] == 'USDT':
+                return float(b['free'])
+    except Exception as e:
+        print(f"Balance Check Error: {e}")
+    return 0.0
+
+# 3. Technical Analysis (RSI Calculation)
 def calculate_rsi(symbol, interval=Client.KLINE_INTERVAL_15MINUTE, period=14):
     try:
         klines = client.get_klines(symbol=symbol, interval=interval, limit=50)
         if not klines or len(klines) < period + 5:
-            print("⚠️ Not enough klines data from Testnet. Using default Sideways RSI.")
-            return 50.0  # Data မလုံလောက်ပါက Sideways (50) သတ်မှတ်ပေးမည်
-            
+            return 50.0
         df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'num_trades', 'taker_buy_base', 'taker_buy_quote', 'ignore'])
         df['close'] = df['close'].astype(float)
-        
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
-        
         latest_rsi = rsi.iloc[-1]
-        if pd.isna(latest_rsi):
-            return 50.0
-        return latest_rsi
+        return 50.0 if pd.isna(latest_rsi) else latest_rsi
     except Exception as e:
-        print(f"RSI Calculation Error: {e}")
+        print(f"RSI Error: {e}")
         return 50.0
 
-# 4. Grid Level Calculation & Order Placement
-def setup_grid_orders(symbol):
-    try:
-        ticker = client.get_symbol_ticker(symbol=symbol)
-        current_price = float(ticker['price'])
-        
-        lower_price = current_price * 0.97
-        upper_price = current_price * 1.03
-        
-        price_step = (upper_price - lower_price) / (GRID_COUNT - 1)
-        log_msg = f"📊 *ETH Grid Setup:* Range `{lower_price:.2f}` to `{upper_price:.2f}` (Current: `{current_price:.2f}`)"
-        print(log_msg)
-        send_telegram(log_msg)
-        
-        for i in range(GRID_COUNT):
-            grid_price = lower_price + (i * price_step)
-            formatted_price = format_price(symbol, grid_price)
-            
-            if formatted_price < current_price:
-                coin_qty = CAPITAL_PER_GRID / formatted_price
-                formatted_qty = format_quantity(symbol, coin_qty)
-                
-                try:
-                    order = client.create_order(
-                        symbol=symbol,
-                        side='BUY',
-                        type='LIMIT',
-                        timeInForce='GTC',
-                        quantity=formatted_qty,
-                        price=str(formatted_price),
-                        recvWindow=60000
-                    )
-                    success_msg = f"✅ Placed ETH Grid BUY Order at `{formatted_price}` (Qty: `{formatted_qty}`)"
-                    print(success_msg)
-                    send_telegram(success_msg)
-                except BinanceAPIException as e:
-                    print(f"❌ Order Error at price {formatted_price}: {e.message}")
-            
-            time.sleep(0.2)
-            
-    except Exception as e:
-        print(f"Grid Setup Error: {e}")
-
-# 5. Main Bot Loop with TA Filter
-def run_ta_grid_bot():
-    start_msg = f"🚀 *TA-based ETH Spot Grid Bot Started* with `${TOTAL_CAPITAL}` Capital..."
+# 4. Main DCA Cycle Logic Bot
+def run_dca_cycle_bot():
+    start_msg = f"🚀 *Spot DCA Cycle Bot Started* for `{SYMBOL}` with `${TOTAL_CAPITAL}` Capital..."
     print(start_msg)
     send_telegram(start_msg)
     
     while True:
-        current_rsi = calculate_rsi(SYMBOL)
-        
-        if current_rsi is not None:
-            print(f"Current {SYMBOL} RSI (15M): {current_rsi:.2f}")
+        try:
+            rsi = calculate_rsi(SYMBOL)
+            print(f"Current {SYMBOL} RSI (15M): {rsi:.2f}")
             
-            if 40 <= current_rsi <= 60:
-                print("🟢 Market is Sideways. Initializing ETH Grid Strategy...")
-                setup_grid_orders(SYMBOL)
-                time.sleep(1800)
+            # အခြေအနေ (၁): ဈေးကွက်စစ်ဆေးခြင်း (Sideways သို့မဟုတ် Support ကျချိန် RSI < 45)
+            if rsi <= 45:
+                print("📉 RSI is low. Starting DCA Cycle 1 (Base Buy)...")
+                
+                initial_balance = get_usdt_balance()
+                ticker = client.get_symbol_ticker(symbol=SYMBOL)
+                current_price = float(ticker['price'])
+                
+                # Step 1: ပထမအလွှာ ဝယ်ယူခြင်း (Base Buy)
+                buy_qty = format_quantity(SYMBOL, CAPITAL_PER_STEP / current_price)
+                order1 = client.create_order(
+                    symbol=SYMBOL, side='BUY', type='MARKET', quantity=buy_qty, recvWindow=60000
+                )
+                executed_price_1 = float(order1.get('fills', [{}])[0].get('price', current_price))
+                total_coins = float(order1['executedQty'])
+                total_cost = total_coins * executed_price_1
+                
+                msg = f"🟢 *DCA Step 1 Executed*: Bought `{total_coins}` ETH at `{executed_price_1}`"
+                print(msg)
+                send_telegram(msg)
+                
+                # Step 2: DCA 2nd Layer (ဈေး ၁% ထပ်ကျပါက ဒုတိယအလွှာ ထပ်ဝယ်မည်)
+                dca_target_price = executed_price_1 * 0.99
+                dca_filled = False
+                
+                start_time = time.time()
+                while time.time() - start_time < 3600:  # ၁ နာရီအတွင်း စောင့်မည်
+                    curr_ticker = float(client.get_symbol_ticker(symbol=SYMBOL)['price'])
+                    if curr_ticker <= dca_target_price:
+                        buy_qty_2 = format_quantity(SYMBOL, CAPITAL_PER_STEP / curr_ticker)
+                        order2 = client.create_order(
+                            symbol=SYMBOL, side='BUY', type='MARKET', quantity=buy_qty_2, recvWindow=60000
+                        )
+                        coins_2 = float(order2['executedQty'])
+                        price_2 = float(order2.get('fills', [{}])[0].get('price', curr_ticker))
+                        
+                        total_coins += coins_2
+                        total_cost += (coins_2 * price_2)
+                        executed_price_1 = total_cost / total_coins  # Average Price အသစ်
+                        
+                        dca_msg = f"🟡 *DCA Step 2 (Dip Buy) Executed*! New Avg Price: `{executed_price_1:.2f}`"
+                        print(dca_msg)
+                        send_telegram(dca_msg)
+                        dca_filled = True
+                        break
+                    time.sleep(15)
+                
+                # Step 3: အမြတ်တင်ပြီး ပြန်ရောင်းချခြင်း (Take Profit Sell Limit)
+                target_sell_price = format_price(SYMBOL, executed_price_1 * (1 + PROFIT_TARGET_PCT))
+                sell_msg = f"🎯 *Placing Take-Profit Sell Order* at `{target_sell_price}` (Target +1.5%)"
+                print(sell_msg)
+                send_telegram(sell_msg)
+                
+                # Sell Order တင်ပြီး ပြီးဆုံးသည်အထိ စောင့်ဆိုင်းခြင်း
+                sell_order = client.create_order(
+                    symbol=SYMBOL, side='SELL', type='LIMIT', timeInForce='GTC',
+                    quantity=format_quantity(SYMBOL, total_coins), price=str(target_sell_price), recvWindow=60000
+                )
+                
+                order_id = sell_order['orderId']
+                while True:
+                    check_order = client.get_order(symbol=SYMBOL, orderId=order_id)
+                    if check_order['status'] == 'FILLED':
+                        break
+                    time.sleep(10)
+                
+                # Step 4: Balance Check & PnL Report ထုတ်ခြင်း
+                new_balance = get_usdt_balance()
+                net_profit = new_balance - initial_balance
+                
+                report = (
+                    f"✅ *Cycle Finished Successfully!*\n"
+                    f"💰 Initial Balance: `{initial_balance:.2f} USDT`\n"
+                    f"💵 New Balance: `{new_balance:.2f} USDT`\n"
+                    f"📈 Net Profit: `+{net_profit:.2f} USDT`\n"
+                    f"-----------------------------------"
+                )
+                print(report)
+                send_telegram(report)
+                
             else:
-                print("⏳ Market is trending. Waiting for Sideways condition...")
-        
-        time.sleep(600)
+                print("⏳ Waiting for favorable RSI (<= 45) to start new DCA cycle...")
+                
+        except Exception as e:
+            print(f"Cycle Error: {e}")
+            
+        time.sleep(300)
 
 if __name__ == "__main__":
-    # Bot ကို Background Thread ထဲမှာ အလုပ်လုပ်ခိုင်းမည်
-    bot_thread = Thread(target=run_ta_grid_bot)
+    bot_thread = Thread(target=run_ta_grid_bot if 'run_ta_grid_bot' in globals() else run_dca_cycle_bot)
     bot_thread.daemon = True
     bot_thread.start()
-    
-    # Main Thread မှာ Flask Web Server ကို ဖွင့်ထားမည် (Render Free Web Service အတွက်)
     run_web()
