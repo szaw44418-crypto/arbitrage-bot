@@ -88,10 +88,14 @@ def format_quantity(symbol, quantity):
     precision = int(round(-math.log10(step_size)))
     return round(round(quantity / step_size) * step_size, precision)
 
-# 3. Technical Analysis (RSI Calculation)
+# 3. Technical Analysis (RSI Calculation - Fixed NaN Handling)
 def calculate_rsi(symbol, interval=Client.KLINE_INTERVAL_1HOUR, period=14):
     try:
         klines = client.get_klines(symbol=symbol, interval=interval, limit=50)
+        if not klines or len(klines) < period + 5:
+            print("⚠️ Not enough klines data from Testnet.")
+            return None
+            
         df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'num_trades', 'taker_buy_base', 'taker_buy_quote', 'ignore'])
         df['close'] = df['close'].astype(float)
         
@@ -101,7 +105,11 @@ def calculate_rsi(symbol, interval=Client.KLINE_INTERVAL_1HOUR, period=14):
         
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
-        return rsi.iloc[-1]
+        
+        latest_rsi = rsi.iloc[-1]
+        if pd.isna(latest_rsi):
+            return 50.0  # Testnet Data Error ဖြစ်ပါက Default အနေဖြင့် Sideways (50) သတ်မှတ်ပေးခြင်း
+        return latest_rsi
     except Exception as e:
         print(f"RSI Calculation Error: {e}")
         return None
