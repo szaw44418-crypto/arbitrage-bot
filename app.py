@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Fast-Cycle Upgraded Spot DCA Bot is running live!"
+    return "🤖 Multi-Coin Spot DCA Cycle Bot is running live!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -29,12 +29,13 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
 client.API_URL = f"{SPOT_BASE}/api"
 
-SYMBOL = "ETHUSDT"
+# နာမည်ကြီး ကွိုင် ၅ မျိုးစာရင်း
+COINS = ["ETHUSDT", "BTCUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT"]
 TOTAL_CAPITAL = 100.0  
 DCA_STEPS = 5          
 CAPITAL_PER_STEP = TOTAL_CAPITAL / DCA_STEPS
 PROFIT_TARGET_PCT = 0.015  # အမြတ် ၁.၅%
-STOP_LOSS_PCT = 0.06       # ပျမ်းမျှဝယ်ဈေးအောက် ၆% ကျပါက အရှုံးခံထွက်ရန်
+STOP_LOSS_PCT = 0.06       # ၆% ကျပါက အရှုံးခံထွက်ရန်
 
 symbol_info_cache = {}
 
@@ -79,7 +80,7 @@ def get_usdt_balance():
     except Exception: pass
     return 0.0
 
-# 3. Technical Analysis & Trend Filtering
+# 3. Technical Analysis for Multi-Coins
 def check_market_conditions(symbol):
     try:
         klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=100)
@@ -101,33 +102,47 @@ def check_market_conditions(symbol):
         
         return is_uptrend, (50.0 if pd.isna(latest_rsi) else latest_rsi)
     except Exception as e:
-        print(f"Analysis Error: {e}")
+        print(f"Analysis Error for {symbol}: {e}")
         return False, 50.0
 
-# 4. Upgraded Fast-Cycle DCA Logic
-def run_upgraded_dca_bot():
-    msg = f"🚀 *Fast-Cycle Spot DCA Bot Started* for `{SYMBOL}` (Optimized 30s Check Interval)"
+# 4. Multi-Coin DCA Bot Logic
+def run_multi_coin_dca_bot():
+    msg = f"🚀 *Multi-Coin Spot DCA Bot Started* (Scanning: {', '.join(COINS)})"
     print(msg)
     send_telegram(msg)
     
     while True:
-        try:
-            is_uptrend, rsi = check_market_conditions(SYMBOL)
-            print(f"Trend Safe: {is_uptrend} | RSI (15M): {rsi:.2f}")
+        target_symbol = None
+        
+        # ကွိုင် 5 မျိုးကို တစ်ခုချင်းစီ စစ်ဆေးရန်
+        for symbol in COINS:
+            try:
+                is_uptrend, rsi = check_market_conditions(symbol)
+                print(f"[{symbol}] Trend Safe: {is_uptrend} | RSI (15M): {rsi:.2f}")
+                
+                # အခြေအနေကိုက်ညီပါက ဤကွိုင်ကို ရွေးချယ်မည်
+                if is_uptrend and rsi <= 50: # အခွင့်အလမ်းပိုများရန် RSI အတိုင်းအတာကို ၅၀ အထိ အနည်းငယ် မြှင့်ပေးထားသည်
+                    target_symbol = symbol
+                    print(f"🎯 Target Acquired: {symbol} matches trading criteria!")
+                    break
+            except Exception as e:
+                print(f"Error checking {symbol}: {e}")
+            time.sleep(2) # API Rate Limit ထိန်းရန်
             
-            if is_uptrend and rsi <= 48:
-                print("📉 Conditions met. Starting Upgraded DCA Cycle...")
+        if target_symbol:
+            try:
+                print(f"📉 Starting DCA Cycle for {target_symbol}...")
                 initial_balance = get_usdt_balance()
                 
-                curr_price = float(client.get_symbol_ticker(symbol=SYMBOL)['price'])
-                buy_qty = format_quantity(SYMBOL, CAPITAL_PER_STEP / curr_price)
-                order = client.create_order(symbol=SYMBOL, side='BUY', type='MARKET', quantity=buy_qty, recvWindow=60000)
+                curr_price = float(client.get_symbol_ticker(symbol=target_symbol)['price'])
+                buy_qty = format_quantity(target_symbol, CAPITAL_PER_STEP / curr_price)
+                order = client.create_order(symbol=target_symbol, side='BUY', type='MARKET', quantity=buy_qty, recvWindow=60000)
                 
                 exec_price = float(order.get('fills', [{}])[0].get('price', curr_price))
                 total_coins = float(order['executedQty'])
                 total_cost = total_coins * exec_price
                 
-                send_telegram(f"🟢 *DCA Step 1 (Base)*: Bought `{total_coins}` ETH at `{exec_price}`")
+                send_telegram(f"🟢 *DCA Step 1 ({target_symbol})*: Bought `{total_coins}` at `{exec_price}`")
                 
                 dca_drops = [0.015, 0.03, 0.05, 0.07]
                 step_count = 1
@@ -138,18 +153,18 @@ def run_upgraded_dca_bot():
                     
                     bought_next = False
                     while time.time() < timeout:
-                        live_price = float(client.get_symbol_ticker(symbol=SYMBOL)['price'])
+                        live_price = float(client.get_symbol_ticker(symbol=target_symbol)['price'])
                         
                         avg_price_check = total_cost / total_coins
                         if live_price <= avg_price_check * (1 - STOP_LOSS_PCT):
-                            send_telegram(f"🚨 *Stop-Loss Triggered!* Cutting losses at `{live_price}`")
-                            client.create_order(symbol=SYMBOL, side='SELL', type='MARKET', quantity=format_quantity(SYMBOL, total_coins), recvWindow=60000)
+                            send_telegram(f"🚨 *Stop-Loss Triggered for {target_symbol}!* Cutting losses at `{live_price}`")
+                            client.create_order(symbol=target_symbol, side='SELL', type='MARKET', quantity=format_quantity(target_symbol, total_coins), recvWindow=60000)
                             bought_next = True
                             break
                         
                         if live_price <= target_dip_price:
-                            q2 = format_quantity(SYMBOL, CAPITAL_PER_STEP / live_price)
-                            o2 = client.create_order(symbol=SYMBOL, side='BUY', type='MARKET', quantity=q2, recvWindow=60000)
+                            q2 = format_quantity(target_symbol, CAPITAL_PER_STEP / live_price)
+                            o2 = client.create_order(symbol=target_symbol, side='BUY', type='MARKET', quantity=q2, recvWindow=60000)
                             c2 = float(o2['executedQty'])
                             p2 = float(o2.get('fills', [{}])[0].get('price', live_price))
                             
@@ -158,7 +173,7 @@ def run_upgraded_dca_bot():
                             exec_price = total_cost / total_coins
                             step_count += 1
                             
-                            send_telegram(f"🟡 *DCA Step {step_count} Executed*! New Avg Price: `{exec_price:.2f}`")
+                            send_telegram(f"🟡 *DCA Step {step_count} ({target_symbol}) Executed*! New Avg: `{exec_price:.2f}`")
                             bought_next = True
                             break
                         time.sleep(10)
@@ -166,48 +181,47 @@ def run_upgraded_dca_bot():
                     if not bought_next: break
                 
                 final_avg_price = total_cost / total_coins
-                target_sell = format_price(SYMBOL, final_avg_price * (1 + PROFIT_TARGET_PCT))
-                stop_loss_price = format_price(SYMBOL, final_avg_price * (1 - STOP_LOSS_PCT))
+                target_sell = format_price(target_symbol, final_avg_price * (1 + PROFIT_TARGET_PCT))
+                stop_loss_price = format_price(target_symbol, final_avg_price * (1 - STOP_LOSS_PCT))
                 
-                send_telegram(f"🎯 *Placing TP Sell* at `{target_sell}` (Avg: `{final_avg_price:.2f}`)")
+                send_telegram(f"🎯 *Placing TP Sell for {target_symbol}* at `{target_sell}` (Avg: `{final_avg_price:.2f}`)")
                 
                 sell_order = client.create_order(
-                    symbol=SYMBOL, side='SELL', type='LIMIT', timeInForce='GTC',
-                    quantity=format_quantity(SYMBOL, total_coins), price=str(target_sell), recvWindow=60000
+                    symbol=target_symbol, side='SELL', type='LIMIT', timeInForce='GTC',
+                    quantity=format_quantity(target_symbol, total_coins), price=str(target_sell), recvWindow=60000
                 )
                 
                 order_id = sell_order['orderId']
                 while True:
-                    chk = client.get_order(symbol=SYMBOL, orderId=order_id)
+                    chk = client.get_order(symbol=target_symbol, orderId=order_id)
                     if chk['status'] == 'FILLED':
                         break
-                    live_p = float(client.get_symbol_ticker(symbol=SYMBOL)['price'])
+                    live_p = float(client.get_symbol_ticker(symbol=target_symbol)['price'])
                     if live_p <= stop_loss_price:
-                        client.cancel_order(symbol=SYMBOL, orderId=order_id)
-                        client.create_order(symbol=SYMBOL, side='SELL', type='MARKET', quantity=format_quantity(SYMBOL, total_coins), recvWindow=60000)
-                        send_telegram(f"🚨 *Emergency Stop-Loss Hit* during TP wait at `{live_p}`")
+                        client.cancel_order(symbol=target_symbol, orderId=order_id)
+                        client.create_order(symbol=target_symbol, side='SELL', type='MARKET', quantity=format_quantity(target_symbol, total_coins), recvWindow=60000)
+                        send_telegram(f"🚨 *Emergency Stop-Loss Hit* for {target_symbol} at `{live_p}`")
                         break
                     time.sleep(15)
                 
                 new_balance = get_usdt_balance()
                 net_profit = new_balance - initial_balance
                 send_telegram(
-                    f"✅ *Cycle Completed!*\n"
+                    f"✅ *Cycle Completed ({target_symbol})!*\n"
                     f"💰 Initial: `{initial_balance:.2f} USDT`\n"
                     f"💵 New: `{new_balance:.2f} USDT`\n"
                     f"📈 Profit/Loss: `{net_profit:+.2f} USDT`\n"
                     f"-----------------------------------"
                 )
-            else:
-                print("⏳ Waiting for favorable Trend & RSI conditions...")
-        except Exception as e:
-            print(f"Bot Error: {e}")
-        
-        # Cycle ပြီးဆုံးပါက သို့မဟုတ် အခြေအနေမကိုက်ညီပါက စောင့်ဆိုင်းမည့်အချိန်ကို ၃၀ စက္ကန့်သို့ လျှော့ချထားသည်
+            except Exception as e:
+                print(f"Cycle Execution Error: {e}")
+        else:
+            print("⏳ No coins met criteria. Scanning again in 30 seconds...")
+            
         time.sleep(30)
 
 if __name__ == "__main__":
-    t = Thread(target=run_upgraded_dca_bot)
+    t = Thread(target=run_multi_coin_dca_bot)
     t.daemon = True
     t.start()
     run_web()
