@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Advanced Rebound-Confirmed Safe Scalping Bot is running live!"
+    return "🤖 Isolated Per-Coin P&L Scalping Bot is running live!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -99,7 +99,7 @@ def check_market_conditions(symbol):
         return False
 
 def coin_trade_worker(symbol):
-    print(f"🔄 Advanced Safe Worker started for {symbol}...")
+    print(f"🔄 Isolated P&L Worker started for {symbol}...")
     while True:
         try:
             should_buy = check_market_conditions(symbol)
@@ -113,14 +113,14 @@ def coin_trade_worker(symbol):
                 total_coins = float(order['executedQty'])
                 total_cost = total_coins * exec_price
                 
-                send_telegram(f"🟢 *Rebound Buy ({symbol})*: Bought at `{exec_price}`")
+                send_telegram(f"🟢 *[{symbol}] Buy Executed*\n• Price: `{exec_price}`\n• Cost: `{total_cost:.2f} USDT`")
                 
                 target_sell = format_price(symbol, exec_price * (1 + PROFIT_TARGET_PCT))
                 stop_loss_price = format_price(symbol, exec_price * (1 - STOP_LOSS_PCT))
                 
                 sell_order = client.create_order(
                     symbol=symbol, side='SELL', type='LIMIT', timeInForce='GTC',
-                    quantity=format_quantity(symbol, total_coins), price=str(target_sell), recvWord=60000
+                    quantity=format_quantity(symbol, total_coins), price=str(target_sell), recvWindow=60000
                 )
                 
                 order_id = sell_order['orderId']
@@ -136,20 +136,21 @@ def coin_trade_worker(symbol):
                     
                     live_p = float(client.get_symbol_ticker(symbol=symbol)['price'])
                     if live_p <= stop_loss_price:
-                        client.cancel_order(symbol=symbol, orderId=orderId)
+                        client.cancel_order(symbol=symbol, orderId=order_id)
                         client.create_order(symbol=symbol, side='SELL', type='MARKET', quantity=format_quantity(symbol, total_coins), recvWindow=60000)
                         exit_price = live_p
-                        send_telegram(f"🚨 *Stop-Loss Triggered ({symbol})* at `{live_p}`")
+                        send_telegram(f"🚨 *[{symbol}] Stop-Loss Triggered*\n• Exit Price: `{live_p}`")
                         break
                     time.sleep(10)
                 
                 total_revenue = total_coins * exit_price
                 net_profit = total_revenue - total_cost
                 
+                # ကွိုင်တစ်ခုချင်းစီအတွက် သီးသန့် အမြတ်/အရှုံး တိကျရှင်းလင်းစွာ ပို့ပေးခြင်း
                 if trade_successful:
-                    send_telegram(f"✅ *Cycle Done ({symbol})* | Profit: `+{net_profit:.2f} USDT`")
+                    send_telegram(f"✅ *[{symbol}] Cycle Completed (PROFIT)*\n• Net Profit: `+{net_profit:.2f} USDT`\n• Exit Price: `{exit_price}`")
                 else:
-                    send_telegram(f"❌ *Cycle Stopped ({symbol})* | Loss: `{net_profit:.2f} USDT`")
+                    send_telegram(f"❌ *[{symbol}] Cycle Stopped (LOSS)*\n• Net Loss: `{net_profit:.2f} USDT`\n• Exit Price: `{exit_price}`")
                     
         except Exception as e:
             print(f"Error in worker {symbol}: {e}")
@@ -157,7 +158,7 @@ def coin_trade_worker(symbol):
         time.sleep(20)
 
 def run_concurrent_bots():
-    msg = f"🚀 *Advanced Rebound-Confirmed Scalping Bot Started* (Coins: {len(COINS)})"
+    msg = f"🚀 *Isolated P&L Scalping Bot Started* (Coins: {len(COINS)})"
     print(msg)
     send_telegram(msg)
     
