@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Isolated Per-Coin P&L Scalping Bot is running live!"
+    return "🤖 Multi-Condition Scalping Bot (10 Sets) is running live!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -79,27 +79,81 @@ def check_market_conditions(symbol):
         
         df = pd.DataFrame(klines, columns=['t','open','high','low','close','v','ct','qav','nt','tb','tq','ig'])
         df['close'] = df['close'].astype(float)
+        df['volume'] = df['v'].astype(float)
         
+        # Indicators Calculation
         df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
-        is_above_ema = df['close'].iloc[-1] > df['EMA50'].iloc[-1]
+        df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
         
+        # RSI 14
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rsi = 100 - (100 / (1 + (gain / loss)))
+        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
         
-        prev_rsi = rsi.iloc[-2]
-        curr_rsi = rsi.iloc[-1]
+        # Bollinger Bands (20, 2)
+        bb_mid = df['close'].rolling(window=20).mean()
+        bb_std = df['close'].rolling(window=20).std()
+        df['BB_Lower'] = bb_mid - (2 * bb_std)
+        df['BB_Upper'] = bb_mid + (2 * bb_std)
         
-        is_rebound = (prev_rsi < 38) and (curr_rsi > prev_rsi) and (curr_rsi < 50)
+        # MACD (12, 26, 9)
+        exp1 = df['close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         
-        return is_above_ema and is_rebound
+        # Volume Average
+        df['Vol_SMA20'] = df['volume'].rolling(window=20).mean()
+
+        curr_close = df['close'].iloc[-1]
+        prev_close = df['close'].iloc[-2]
+        curr_rsi = df['RSI'].iloc[-1]
+        prev_rsi = df['RSI'].iloc[-2]
+        
+        # --- တွဲ ၁၀ ခု သတ်မှတ်ချက်များ ---
+        
+        # တွဲ ၁: EMA 50 အထက်ရှိခြင်း + RSI Rebound (< 38 မှ တက်လာခြင်း)
+        set_1 = (curr_close > df['EMA50'].iloc[-1]) and (prev_rsi < 38) and (curr_rsi > prev_rsi) and (curr_rsi < 50)
+        
+        # တွဲ ၂: Bollinger Band အောက်ဘက်လိုင်းကို ထိပြီး/အောက်ရောက်ပြီး ပြန်ဝင်လာခြင်း + RSI Oversold (< 35) မှ ပြန်တက်ခြင်း
+        set_2 = (prev_close <= df['BB_Lower'].iloc[-2]) and (curr_close > df['BB_Lower'].iloc[-1]) and (curr_rsi < 35) and (curr_rsi > prev_rsi)
+        
+        # တွဲ ၃: MACD Bullish Crossover + ဈေးနှုန်းက EMA 20 ထက်များခြင်း
+        set_3 = (df['MACD'].iloc[-2] <= df['MACD_Signal'].iloc[-2]) and (df['MACD'].iloc[-1] > df['MACD_Signal'].iloc[-1]) and (curr_close > df['EMA20'].iloc[-1])
+        
+        # တွဲ ၄: Volume Spike (ပျမ်းမျှထက် ၂ ဆကျော်များခြင်း) + ဈေးနှုန်း အတက်ပြောင်းခြင်း
+        set_4 = (df['volume'].iloc[-1] > (df['Vol_SMA20'].iloc[-1] * 2)) and (curr_close > prev_close)
+        
+        # တွဲ ၅: RSI အလွန်အမင်းကျနေရာမှ (< 25) အပေါ်သို့ အပြင်းအထန် ပြန်ကောက်လာခြင်း
+        set_5 = (prev_rsi < 25) and (curr_rsi > prev_rsi + 3)
+        
+        # တွဲ ၆: EMA 9 သည် EMA 20 ကို အောက်မှအပေါ်သို့ ဖြတ်တက်ခြင်း (Golden Cross ရေတို)
+        set_6 = (df['EMA9'].iloc[-2] <= df['EMA20'].iloc[-2]) and (df['EMA9'].iloc[-1] > df['EMA20'].iloc[-1])
+        
+        # တွဲ ၇: ဈေးနှုန်းက ယခင်ဖယောင်းတိုင်အနိမ့်ဆုံးအောက်ကို ခေတ္တထိုးဆင်းပြီးမှ ပြန်တက်လာခြင်း (Pinbar/Rejection)
+        set_7 = (df['low'].iloc[-1] < df['low'].iloc[-2]) and (curr_close > df['open'].iloc[-1]) and (curr_close > prev_close)
+        
+        # တွဲ ၈: RSI သည် 40 ဝန်းကျင်မှ အပေါ်သို့ ပြန်ကောက်လာပြီး ဈေးနှုန်းက EMA 20 အထက်တွင် ရှိခြင်း
+        set_8 = (prev_rsi >= 35) and (prev_rsi <= 45) and (curr_rsi > prev_rsi) and (curr_close > df['EMA20'].iloc[-1])
+        
+        # တွဲ ၉: Bollinger Band အလယ်လိုင်း (SMA 20) ကို အောက်မှအပေါ်သို့ အောင်မြင်စွာ ဖြတ်ကျော်ဝင်ရောက်ခြင်း
+        set_9 = (prev_close <= bb_mid.iloc[-2]) and (curr_close > bb_mid.iloc[-1]) and (curr_rsi > 50)
+        
+        # တွဲ ၁၀: ဈေးနှုန်း સતဆက်ကျနေရာမှ (Continuous 3 Red Candles) ပြီးနောက် အစိမ်းရောင် ဖယောင်းတိုင်သစ် ထွက်လာခြင်း
+        set_10 = (df['close'].iloc[-3] < df['open'].iloc[-3]) and (df['close'].iloc[-2] < df['open'].iloc[-2]) and (curr_close > df['open'].iloc[-1]) and (curr_rsi > prev_rsi)
+
+        # တွဲ ၁၀ ခုအနက် မည်သည့် ၁ တွဲနှင့် ကိုက်ညီပါက True ပေးမည် (OR Logic)
+        return (set_1 or set_2 or set_3 or set_4 or set_5 or 
+                set_6 or set_7 or set_8 or set_9 or set_10)
+        
     except Exception as e:
         print(f"Condition check error [{symbol}]: {e}")
         return False
 
 def coin_trade_worker(symbol):
-    print(f"🔄 Isolated P&L Worker started for {symbol}...")
+    print(f"🔄 10-Condition Worker started for {symbol}...")
     while True:
         try:
             should_buy = check_market_conditions(symbol)
@@ -113,7 +167,7 @@ def coin_trade_worker(symbol):
                 total_coins = float(order['executedQty'])
                 total_cost = total_coins * exec_price
                 
-                send_telegram(f"🟢 *[{symbol}] Buy Executed*\n• Price: `{exec_price}`\n• Cost: `{total_cost:.2f} USDT`")
+                send_telegram(f"🟢 *[{symbol}] Buy Executed (10-Set)*\n• Price: `{exec_price}`\n• Cost: `{total_cost:.2f} USDT`")
                 
                 target_sell = format_price(symbol, exec_price * (1 + PROFIT_TARGET_PCT))
                 stop_loss_price = format_price(symbol, exec_price * (1 - STOP_LOSS_PCT))
@@ -146,7 +200,6 @@ def coin_trade_worker(symbol):
                 total_revenue = total_coins * exit_price
                 net_profit = total_revenue - total_cost
                 
-                # ကွိုင်တစ်ခုချင်းစီအတွက် သီးသန့် အမြတ်/အရှုံး တိကျရှင်းလင်းစွာ ပို့ပေးခြင်း
                 if trade_successful:
                     send_telegram(f"✅ *[{symbol}] Cycle Completed (PROFIT)*\n• Net Profit: `+{net_profit:.2f} USDT`\n• Exit Price: `{exit_price}`")
                 else:
@@ -158,7 +211,7 @@ def coin_trade_worker(symbol):
         time.sleep(20)
 
 def run_concurrent_bots():
-    msg = f"🚀 *Isolated P&L Scalping Bot Started* (Coins: {len(COINS)})"
+    msg = f"🚀 *Multi-Condition Scalping Bot Started* (Coins: {len(COINS)}, Sets: 10)"
     print(msg)
     send_telegram(msg)
     
