@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Multi-Condition Scalping Bot (10 Sets) is running live!"
+    return "🤖 Net-Profit Scalping Bot (30 Sets with Tag) is running live!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -34,7 +34,7 @@ COINS = [
 ]
 
 CAPITAL_PER_ORDER = 10.0  
-PROFIT_TARGET_PCT = 0.01   # အမြတ် ၁%
+PROFIT_TARGET_PCT = 0.012   # Net 1% ကျန်ရန် 1.2% သတ်မှတ်ထားသည်
 STOP_LOSS_PCT = 0.025      # အရှုံး ၂.၅%
 
 symbol_info_cache = {}
@@ -75,72 +75,135 @@ def format_quantity(symbol, qty):
 def check_market_conditions(symbol):
     try:
         klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=60)
-        if not klines or len(klines) < 50: return False
+        if not klines or len(klines) < 50: return False, None
         
         df = pd.DataFrame(klines, columns=['t','open','high','low','close','v','ct','qav','nt','tb','tq','ig'])
         
-        # ဒေတာအမျိုးအစားများကို float သို့ အတိအကျပြောင်းလဲခြင်း
         df['open'] = df['open'].astype(float)
         df['high'] = df['high'].astype(float)
         df['low'] = df['low'].astype(float)
         df['close'] = df['close'].astype(float)
         df['volume'] = df['v'].astype(float)
         
-        # Indicators Calculation
         df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
         df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
         
-        # RSI 14
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         df['RSI'] = 100 - (100 / (1 + (gain / loss)))
         
-        # Bollinger Bands (20, 2)
         bb_mid = df['close'].rolling(window=20).mean()
         bb_std = df['close'].rolling(window=20).std()
         df['BB_Lower'] = bb_mid - (2 * bb_std)
         df['BB_Upper'] = bb_mid + (2 * bb_std)
         
-        # MACD (12, 26, 9)
         exp1 = df['close'].ewm(span=12, adjust=False).mean()
         exp2 = df['close'].ewm(span=26, adjust=False).mean()
         df['MACD'] = exp1 - exp2
         df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         
-        # Volume Average
         df['Vol_SMA20'] = df['volume'].rolling(window=20).mean()
 
-        curr_close = df['close'].iloc[-1]
-        prev_close = df['close'].iloc[-2]
-        curr_rsi = df['RSI'].iloc[-1]
-        prev_rsi = df['RSI'].iloc[-2]
+        curr_open, prev_open = df['open'].iloc[-1], df['open'].iloc[-2]
+        curr_close, prev_close = df['close'].iloc[-1], df['close'].iloc[-2]
+        curr_high, prev_high = df['high'].iloc[-1], df['high'].iloc[-2]
+        curr_low, prev_low = df['low'].iloc[-1], df['low'].iloc[-2]
+        
+        curr_rsi, prev_rsi = df['RSI'].iloc[-1], df['RSI'].iloc[-2]
+        curr_macd, prev_macd = df['MACD'].iloc[-1], df['MACD'].iloc[-2]
+        curr_sig, prev_sig = df['MACD_Signal'].iloc[-1], df['MACD_Signal'].iloc[-2]
+        
+        curr_vol = df['volume'].iloc[-1]
+        vol_sma = df['Vol_SMA20'].iloc[-1]
+        
+        bb_lower_curr = df['BB_Lower'].iloc[-1]
+        bb_upper_curr = df['BB_Upper'].iloc[-1]
+        bb_mid_curr, bb_mid_prev = bb_mid.iloc[-1], bb_mid.iloc[-2]
+        
+        ema9_curr, ema9_prev = df['EMA9'].iloc[-1], df['EMA9'].iloc[-2]
+        ema20_curr, ema20_prev = df['EMA20'].iloc[-1], df['EMA20'].iloc[-2]
+        ema50_curr = df['EMA50'].iloc[-1]
         
         # --- တွဲ ၁၀ ခု သတ်မှတ်ချက်များ ---
-        set_1 = (curr_close > df['EMA50'].iloc[-1]) and (prev_rsi < 38) and (curr_rsi > prev_rsi) and (curr_rsi < 50)
-        set_2 = (prev_close <= df['BB_Lower'].iloc[-2]) and (curr_close > df['BB_Lower'].iloc[-1]) and (curr_rsi < 35) and (curr_rsi > prev_rsi)
-        set_3 = (df['MACD'].iloc[-2] <= df['MACD_Signal'].iloc[-2]) and (df['MACD'].iloc[-1] > df['MACD_Signal'].iloc[-1]) and (curr_close > df['EMA20'].iloc[-1])
-        set_4 = (df['volume'].iloc[-1] > (df['Vol_SMA20'].iloc[-1] * 2)) and (curr_close > prev_close)
+        set_1 = (curr_close > ema50_curr) and (prev_rsi < 38) and (curr_rsi > prev_rsi) and (curr_rsi < 50)
+        set_2 = (prev_close <= df['BB_Lower'].iloc[-2]) and (curr_close > bb_lower_curr) and (curr_rsi < 35) and (curr_rsi > prev_rsi)
+        set_3 = (prev_macd <= prev_sig) and (curr_macd > curr_sig) and (curr_close > ema20_curr)
+        set_4 = (curr_vol > (vol_sma * 2)) and (curr_close > prev_close)
         set_5 = (prev_rsi < 25) and (curr_rsi > prev_rsi + 3)
-        set_6 = (df['EMA9'].iloc[-2] <= df['EMA20'].iloc[-2]) and (df['EMA9'].iloc[-1] > df['EMA20'].iloc[-1])
-        set_7 = (df['low'].iloc[-1] < df['low'].iloc[-2]) and (curr_close > df['open'].iloc[-1]) and (curr_close > prev_close)
-        set_8 = (prev_rsi >= 35) and (prev_rsi <= 45) and (curr_rsi > prev_rsi) and (curr_close > df['EMA20'].iloc[-1])
-        set_9 = (prev_close <= bb_mid.iloc[-2]) and (curr_close > bb_mid.iloc[-1]) and (curr_rsi > 50)
-        set_10 = (df['close'].iloc[-3] < df['open'].iloc[-3]) and (df['close'].iloc[-2] < df['open'].iloc[-2]) and (curr_close > df['open'].iloc[-1]) and (curr_rsi > prev_rsi)
+        set_6 = (ema9_prev <= ema20_prev) and (ema9_curr > ema20_curr)
+        set_7 = (curr_low < prev_low) and (curr_close > curr_open) and (curr_close > prev_close)
+        set_8 = (prev_rsi >= 35) and (prev_rsi <= 45) and (curr_rsi > prev_rsi) and (curr_close > ema20_curr)
+        set_9 = (prev_close <= bb_mid_prev) and (curr_close > bb_mid_curr) and (curr_rsi > 50)
+        set_10 = (df['close'].iloc[-3] < df['open'].iloc[-3]) and (prev_close < prev_open) and (curr_close > curr_open) and (curr_rsi > prev_rsi)
 
-        return (set_1 or set_2 or set_3 or set_4 or set_5 or 
-                set_6 or set_7 or set_8 or set_9 or set_10)
+        # --- ၂ ခုတွဲ သတ်မှတ်ချက် Set ၂၀ ခု (Set 11 မှ Set 30) ---
+        set_11 = (curr_rsi < 40) and (prev_macd <= prev_sig and curr_macd > curr_sig)
+        set_12 = (curr_close <= bb_lower_curr * 1.015) and (curr_rsi < 30)
+        set_13 = (ema9_prev <= ema20_prev and ema9_curr > ema20_curr) and (curr_vol > vol_sma * 1.5)
+        set_14 = (prev_close < prev_open and curr_close > curr_open and curr_close > prev_open and curr_open < prev_close) and (curr_close > ema20_curr)
+        set_15 = (curr_close > ema50_curr) and (curr_macd > 0 and curr_macd > curr_sig)
+        set_16 = (curr_low < bb_lower_curr and curr_close > bb_lower_curr) and (curr_rsi > prev_rsi)
+        set_17 = (prev_rsi <= 40 and curr_rsi > 40) and (curr_close > ema9_curr)
+        set_18 = (curr_vol > vol_sma * 2) and (curr_close > prev_close * 1.01)
+        set_19 = (curr_close > curr_open and prev_close > prev_open and df['close'].iloc[-3] > df['open'].iloc[-3]) and (curr_rsi < 60)
+        set_20 = (prev_close <= bb_mid_prev and curr_close > bb_mid_curr) and (curr_macd > curr_sig)
+        set_21 = ((min(curr_open, curr_close) - curr_low) > (abs(curr_open - curr_close) * 2)) and (curr_vol > vol_sma)
+        set_22 = (curr_rsi > df['RSI'].iloc[-3]) and (curr_macd > prev_macd)
+        set_23 = (ema20_curr > ema50_curr) and (curr_rsi < 45)
+        set_24 = (curr_close < bb_lower_curr * 1.02) and (curr_close > ema9_curr)
+        set_25 = (curr_rsi < 35) and (curr_vol > vol_sma * 1.5)
+        set_26 = ((curr_macd - curr_sig) > (prev_macd - prev_sig)) and (curr_close > curr_open)
+        set_27 = (curr_high < prev_high and curr_low > prev_low and curr_close > curr_open) and (curr_rsi > 40)
+        set_28 = (curr_low <= ema9_curr and curr_close > ema9_curr) and (curr_macd > curr_sig)
+        set_29 = (curr_low <= ema50_curr and curr_close > ema50_curr) and (curr_rsi > prev_rsi)
+        set_30 = (((bb_upper_curr - bb_lower_curr) / curr_close) < 0.05) and (curr_vol > vol_sma * 2 and curr_close > curr_open)
+
+        # တွဲအလိုက် စစ်ဆေးပြီး ကိုက်ညီသည့် Set နံပါတ်ကို ပြန်ပေးရန်
+        if set_1: return True, "Set 1 (EMA50+RSI)"
+        if set_2: return True, "Set 2 (BB Lower)"
+        if set_3: return True, "Set 3 (MACD Cross)"
+        if set_4: return True, "Set 4 (Volume Spike)"
+        if set_5: return True, "Set 5 (Extreme RSI)"
+        if set_6: return True, "Set 6 (EMA 9/20 Cross)"
+        if set_7: return True, "Set 7 (Pinbar)"
+        if set_8: return True, "Set 8 (Mid-RSI Recovery)"
+        if set_9: return True, "Set 9 (BB Middle Cross)"
+        if set_10: return True, "Set 10 (3 Red Reversal)"
+        
+        if set_11: return True, "Set 11 (RSI+MACD Cross)"
+        if set_12: return True, "Set 12 (BB Low+RSI <30)"
+        if set_13: return True, "Set 13 (EMA Cross+Vol)"
+        if set_14: return True, "Set 14 (Engulfing+EMA20)"
+        if set_15: return True, "Set 15 (EMA50+MACD Pos)"
+        if set_16: return True, "Set 16 (BB Bounce+RSI Up)"
+        if set_17: return True, "Set 17 (RSI >40+EMA9)"
+        if set_18: return True, "Set 18 (Vol+Price Surge)"
+        if set_19: return True, "Set 19 (3 Green+RSI <60)"
+        if set_20: return True, "Set 20 (BB Mid+MACD)"
+        if set_21: return True, "Set 21 (Pinbar+Vol)"
+        if set_22: return True, "Set 22 (RSI Up+MACD Up)"
+        if set_23: return True, "Set 23 (Uptrend+RSI <45)"
+        if set_24: return True, "Set 24 (Near BB Low+EMA9)"
+        if set_25: return True, "Set 25 (RSI <35+Vol Spike)"
+        if set_26: return True, "Set 26 (MACD Hist+Green)"
+        if set_27: return True, "Set 27 (Inside Bar+RSI >40)"
+        if set_28: return True, "Set 28 (EMA9 Bounce+MACD)"
+        if set_29: return True, "Set 29 (EMA50 Bounce+RSI)"
+        if set_30: return True, "Set 30 (BB Squeeze+Vol)"
+
+        return False, None
         
     except Exception as e:
         print(f"Condition check error [{symbol}]: {e}")
-        return False
+        return False, None
 
 def coin_trade_worker(symbol):
-    print(f"🔄 10-Condition Worker started for {symbol}...")
+    print(f"🔄 Labeled Worker started for {symbol}...")
     while True:
         try:
-            should_buy = check_market_conditions(symbol)
+            should_buy, matched_set = check_market_conditions(symbol)
             
             if should_buy:
                 curr_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
@@ -151,7 +214,7 @@ def coin_trade_worker(symbol):
                 total_coins = float(order['executedQty'])
                 total_cost = total_coins * exec_price
                 
-                send_telegram(f"🟢 *[{symbol}] Buy Executed (10-Set)*\n• Price: `{exec_price}`\n• Cost: `{total_cost:.2f} USDT`")
+                send_telegram(f"🟢 *[{symbol}] Buy Executed*\n• Trigger: `{matched_set}`\n• Price: `{exec_price}`\n• Cost: `{total_cost:.2f} USDT`")
                 
                 target_sell = format_price(symbol, exec_price * (1 + PROFIT_TARGET_PCT))
                 stop_loss_price = format_price(symbol, exec_price * (1 - STOP_LOSS_PCT))
@@ -195,7 +258,7 @@ def coin_trade_worker(symbol):
         time.sleep(20)
 
 def run_concurrent_bots():
-    msg = f"🚀 *Multi-Condition Scalping Bot Started* (Coins: {len(COINS)}, Sets: 10)"
+    msg = f"🚀 *Labeled Scalping Bot Started* (Coins: {len(COINS)}, Sets: 30)"
     print(msg)
     send_telegram(msg)
     
