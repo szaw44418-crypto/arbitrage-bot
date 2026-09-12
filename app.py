@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Scalping Bot (30 Combinations with Stable Testnet Coins & Daily Performance Report) is running!"
+    return "🤖 Scalping Bot (30 Combinations with New Telegram Credentials & Daily Performance Report) is running!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -23,13 +23,13 @@ SPOT_BASE = "https://testnet.binance.vision"
 SPOT_API_KEY = os.environ.get("SPOT_API_KEY", "EGMDZzNYcF8aHKsKGxWurbK63sLFdKA42cDEZC3zd8IPkyD3JDEH7btCt4D34aWV")
 SPOT_SECRET_KEY = os.environ.get("SPOT_SECRET_KEY", "YfGOumNKz4MMbZ9MBy7aMB3R6CWxSjVljJvreup8k3BGL5pi1pqc73ieCpOghM8R")
 
-TELEGRAM_BOT_TOKEN = "8849579856:AAF7kWMMgtCswjY-Vcog-oa0ur16c60dJio"
-TELEGRAM_CHAT_ID = "6127362073"
+# 📱 Telegram Credentials အသစ်များဖြင့် အစားထိုးထားပါသည်
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q7tQP_v3kNVAyslSYD3FsAWz60").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
 
 client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
 client.API_URL = f"{SPOT_BASE}/api"
 
-# MATICUSDT အစား Testnet တွင် သေချာပေါက်ရသော SOLUSDT ကို အစားထိုးထားပါသည်
 COINS = [
     "BTCUSDT", "ETHUSDT", "XRPUSDT", "DOGEUSDT", 
     "ADAUSDT", "LINKUSDT", "SUIUSDT", "AVAXUSDT", 
