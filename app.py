@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Net-Profit Scalping Bot (Updated Coins & Cooldown) is running live!"
+    return "🤖 Net-Profit Scalping Bot (Profit: 3%, SL: 2%) is running live!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -21,13 +21,12 @@ SPOT_BASE = "https://testnet.binance.vision"
 SPOT_API_KEY = os.environ.get("SPOT_API_KEY", "EGMDZzNYcF8aHKsKGxWurbK63sLFdKA42cDEZC3zd8IPkyD3JDEH7btCt4D34aWV")
 SPOT_SECRET_KEY = os.environ.get("SPOT_SECRET_KEY", "YfGOumNKz4MMbZ9MBy7aMB3R6CWxSjVljJvreup8k3BGL5pi1pqc73ieCpOghM8R")
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_BOT_TOKEN = "8849579856:AAF7kWMMgtCswjY-Vcog-oa0ur16c60dJio"
+TELEGRAM_CHAT_ID = "6127362073"
 
 client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
 client.API_URL = f"{SPOT_BASE}/api"
 
-# SHIBUSDT ကို ဖြုတ်ပြီး SOLUSDT ဖြင့် အစားထိုးထားသည်
 COINS = [
     "LTCUSDT", "BCHUSDT", "ETCUSDT", "NEARUSDT", 
     "ATOMUSDT", "SOLUSDT", "ARBUSDT", "OPUSDT", 
@@ -35,11 +34,11 @@ COINS = [
 ]
 
 CAPITAL_PER_ORDER = 10.0  
-PROFIT_TARGET_PCT = 0.012   # Net 1% ကျန်ရန် 1.2% သတ်မှတ်ထားသည်
-STOP_LOSS_PCT = 0.025      # အရှုံး ၂.၅%
+PROFIT_TARGET_PCT = 0.03   
+STOP_LOSS_PCT = 0.02       
 
 symbol_info_cache = {}
-active_trades = {}  # ထပ်ခါထပ်ခါ မဝယ်မိစေရန် ထိန်းချုပ်မည့် Dict
+active_trades = {}  
 
 def send_telegram(message):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -105,7 +104,6 @@ def check_market_conditions(symbol):
         exp2 = df['close'].ewm(span=26, adjust=False).mean()
         df['MACD'] = exp1 - exp2
         df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        
         df['Vol_SMA20'] = df['volume'].rolling(window=20).mean()
 
         curr_open, prev_open = df['open'].iloc[-1], df['open'].iloc[-2]
@@ -121,75 +119,76 @@ def check_market_conditions(symbol):
         vol_sma = df['Vol_SMA20'].iloc[-1]
         
         bb_lower_curr = df['BB_Lower'].iloc[-1]
-        bb_upper_curr = df['BB_Upper'].iloc[-1]
         bb_mid_curr, bb_mid_prev = bb_mid.iloc[-1], bb_mid.iloc[-2]
         
         ema9_curr, ema9_prev = df['EMA9'].iloc[-1], df['EMA9'].iloc[-2]
         ema20_curr, ema20_prev = df['EMA20'].iloc[-1], df['EMA20'].iloc[-2]
         ema50_curr = df['EMA50'].iloc[-1]
-        
-        set_1 = (curr_close > ema50_curr) and (prev_rsi < 38) and (curr_rsi > prev_rsi) and (curr_rsi < 50)
-        set_2 = (prev_close <= df['BB_Lower'].iloc[-2]) and (curr_close > bb_lower_curr) and (curr_rsi < 35) and (curr_rsi > prev_rsi)
-        set_3 = (prev_macd <= prev_sig) and (curr_macd > curr_sig) and (curr_close > ema20_curr)
-        set_4 = (curr_vol > (vol_sma * 2)) and (curr_close > prev_close)
-        set_5 = (prev_rsi < 25) and (curr_rsi > prev_rsi + 3)
-        set_6 = (ema9_prev <= ema20_prev) and (ema9_curr > ema20_curr)
-        set_7 = (curr_low < prev_low) and (curr_close > curr_open) and (curr_close > prev_close)
-        set_8 = (prev_rsi >= 35) and (prev_rsi <= 45) and (curr_rsi > prev_rsi) and (curr_close > ema20_curr)
-        set_9 = (prev_close <= bb_mid_prev) and (curr_close > bb_mid_curr) and (curr_rsi > 50)
-        set_10 = (df['close'].iloc[-3] < df['open'].iloc[-3]) and (prev_close < prev_open) and (curr_close > curr_open) and (curr_rsi > prev_rsi)
 
-        set_11 = (curr_rsi < 40) and (prev_macd <= prev_sig and curr_macd > curr_sig)
-        set_12 = (curr_close <= bb_lower_curr * 1.015) and (curr_rsi < 30)
-        set_13 = (ema9_prev <= ema20_prev and ema9_curr > ema20_curr) and (curr_vol > vol_sma * 1.5)
-        set_14 = (prev_close < prev_open and curr_close > curr_open and curr_close > prev_open and curr_open < prev_close) and (curr_close > ema20_curr)
-        set_15 = (curr_close > ema50_curr) and (curr_macd > 0 and curr_macd > curr_sig)
-        set_16 = (curr_low < bb_lower_curr and curr_close > bb_lower_curr) and (curr_rsi > prev_rsi)
-        set_17 = (prev_rsi <= 40 and curr_rsi > 40) and (curr_close > ema9_curr)
-        set_18 = (curr_vol > vol_sma * 2) and (curr_close > prev_close * 1.01)
-        set_19 = (curr_close > curr_open and prev_close > prev_open and df['close'].iloc[-3] > df['open'].iloc[-3]) and (curr_rsi < 60)
-        set_20 = (prev_close <= bb_mid_prev and curr_close > bb_mid_curr) and (curr_macd > curr_sig)
-        set_21 = ((min(curr_open, curr_close) - curr_low) > (abs(curr_open - curr_close) * 2)) and (curr_vol > vol_sma)
-        set_22 = (curr_rsi > df['RSI'].iloc[-3]) and (curr_macd > prev_macd)
-        set_23 = (ema20_curr > ema50_curr) and (curr_rsi < 45)
-        set_24 = (curr_close < bb_lower_curr * 1.02) and (curr_close > ema9_curr)
-        set_25 = (curr_rsi < 35) and (curr_vol > vol_sma * 1.5)
-        set_26 = ((curr_macd - curr_sig) > (prev_macd - prev_sig)) and (curr_close > curr_open)
-        set_27 = (curr_high < prev_high and curr_low > prev_low and curr_close > curr_open) and (curr_rsi > 40)
-        set_28 = (curr_low <= ema9_curr and curr_close > ema9_curr) and (curr_macd > curr_sig)
-        set_29 = (curr_low <= ema50_curr and curr_close > ema50_curr) and (curr_rsi > prev_rsi)
-        set_30 = (((bb_upper_curr - bb_lower_curr) / curr_close) < 0.05) and (curr_vol > vol_sma * 2 and curr_close > curr_open)
+        pinbar = ((min(curr_open, curr_close) - curr_low) > (abs(curr_open - curr_close) * 2))
 
-        if set_1: return True, "Set 1 (EMA50+RSI)"
-        if set_2: return True, "Set 2 (BB Lower)"
-        if set_3: return True, "Set 3 (MACD Cross)"
-        if set_4: return True, "Set 4 (Volume Spike)"
-        if set_5: return True, "Set 5 (Extreme RSI)"
-        if set_6: return True, "Set 6 (EMA 9/20 Cross)"
-        if set_7: return True, "Set 7 (Pinbar)"
-        if set_8: return True, "Set 8 (Mid-RSI Recovery)"
-        if set_9: return True, "Set 9 (BB Middle Cross)"
-        if set_10: return True, "Set 10 (3 Red Reversal)"
-        if set_11: return True, "Set 11 (RSI+MACD Cross)"
-        if set_12: return True, "Set 12 (BB Low+RSI <30)"
-        if set_13: return True, "Set 13 (EMA Cross+Vol)"
-        if set_14: return True, "Set 14 (Engulfing+EMA20)"
-        if set_15: return True, "Set 15 (EMA50+MACD Pos)"
-        if set_16: return True, "Set 16 (BB Bounce+RSI Up)"
-        if set_17: return True, "Set 17 (RSI >40+EMA9)"
-        if set_18: return True, "Set 18 (Vol+Price Surge)"
-        if set_19: return True, "Set 19 (3 Green+RSI <60)"
-        if set_20: return True, "Set 20 (BB Mid+MACD)"
-        if set_21: return True, "Set 21 (Pinbar+Vol)"
-        if set_22: return True, "Set 22 (RSI Up+MACD Up)"
-        if set_23: return True, "Set 23 (Uptrend+RSI <45)"
-        if set_24: return True, "Set 24 (Near BB Low+EMA9)"
-        if set_25: return True, "Set 25 (RSI <35+Vol Spike)"
-        if set_26: return True, "Set 26 (MACD Hist+Green)"
-        if set_27: return True, "Set 27 (Inside Bar+RSI >40)"
-        if set_28: return True, "Set 28 (EMA9 Bounce+MACD)"
-        if set_29: return True, "Set 29 (EMA50 Bounce+RSI)"
-        if set_30: return True, "Set 30 (BB Squeeze+Vol)"
+        # တောင်းဆိုထားသော Combination Set ၃၀
+        set_1 = (curr_rsi > prev_rsi) and (curr_close > ema50_curr) and (curr_macd > curr_sig) and (curr_vol > vol_sma * 1.5)
+        set_2 = (curr_rsi < 35) and (curr_rsi > prev_rsi) and (ema9_prev <= ema20_prev and ema9_curr > ema20_curr) and (curr_vol > vol_sma * 1.5)
+        set_3 = (prev_close <= bb_lower_curr) and (curr_close > bb_lower_curr) and (curr_rsi > prev_rsi) and (curr_macd > curr_sig)
+        set_4 = (curr_rsi < 25) and (curr_rsi > prev_rsi) and (curr_close > ema20_curr) and (curr_vol > vol_sma * 1.5)
+        set_5 = (ema9_prev <= ema20_prev and ema9_curr > ema20_curr) and (curr_macd > curr_sig) and (curr_vol > vol_sma * 1.5)
+        set_6 = (curr_close > ema50_curr) and (curr_rsi > prev_rsi) and pinbar
+        set_7 = (prev_close <= bb_lower_curr) and (curr_close > bb_lower_curr) and pinbar and (curr_rsi < 35 and curr_rsi > prev_rsi)
+        set_8 = (df['close'].iloc[-3] < df['open'].iloc[-3]) and (prev_close < prev_open) and (curr_close > curr_open) and (curr_rsi > prev_rsi) and (curr_vol > vol_sma * 1.5)
+        set_9 = (prev_close <= bb_mid_prev and curr_close > bb_mid_curr) and (curr_rsi > 50) and (curr_macd > curr_sig)
+        set_10 = (curr_close > ema20_curr) and (prev_rsi >= 35 and prev_rsi <= 45 and curr_rsi > prev_rsi) and (ema9_prev <= ema20_prev and ema9_curr > ema20_curr)
+        set_11 = (curr_rsi < 35) and (curr_rsi > prev_rsi) and (curr_macd > curr_sig) and (curr_vol > vol_sma * 1.5)
+        set_12 = (curr_rsi < 25) and (curr_rsi > prev_rsi) and pinbar and (curr_macd > curr_sig)
+        set_13 = (curr_close > ema50_curr) and (prev_close <= bb_lower_curr and curr_close > bb_lower_curr) and (curr_rsi > prev_rsi)
+        set_14 = (ema9_prev <= ema20_prev and ema9_curr > ema20_curr) and (prev_rsi >= 35 and prev_rsi <= 45 and curr_rsi > prev_rsi) and (curr_vol > vol_sma * 1.5)
+        set_15 = (prev_close <= bb_lower_curr and curr_close > bb_lower_curr) and (curr_close > ema20_curr) and (curr_vol > vol_sma * 1.5)
+        set_16 = (df['close'].iloc[-3] < df['open'].iloc[-3]) and (prev_close < prev_open) and (curr_close > curr_open) and pinbar and (curr_rsi > prev_rsi) and (curr_vol > vol_sma * 1.5)
+        set_17 = (curr_close > ema50_curr) and (ema9_prev <= ema20_prev and ema9_curr > ema20_curr) and (curr_macd > curr_sig)
+        set_18 = (curr_rsi < 25) and (curr_rsi > prev_rsi) and (prev_close <= bb_lower_curr and curr_close > bb_lower_curr) and (curr_vol > vol_sma * 1.5)
+        set_19 = (prev_close <= bb_mid_prev and curr_close > bb_mid_curr) and (curr_close > ema20_curr) and (curr_macd > curr_sig) and (curr_vol > vol_sma * 1.5)
+        set_20 = (curr_close > ema50_curr) and (curr_rsi > prev_rsi) and (ema9_prev <= ema20_prev and ema9_curr > ema20_curr) and (curr_macd > curr_sig) and (curr_vol > vol_sma * 1.5)
+        set_21 = (curr_rsi > prev_rsi) and (prev_close <= bb_lower_curr and curr_close > bb_lower_curr) and (curr_close > ema20_curr)
+        set_22 = (curr_rsi < 30) and (curr_rsi > prev_rsi) and (curr_macd > curr_sig) and (curr_vol > vol_sma * 1.5)
+        set_23 = (curr_close > ema50_curr) and (prev_close <= bb_mid_prev and curr_close > bb_mid_curr) and (curr_rsi > 50)
+        set_24 = (ema9_prev <= ema20_prev and ema9_curr > ema20_curr) and pinbar and (curr_vol > vol_sma * 1.5)
+        set_25 = (curr_rsi < 35) and (curr_rsi > prev_rsi) and (prev_close <= bb_lower_curr and curr_close > bb_lower_curr) and pinbar and (curr_vol > vol_sma * 1.5)
+        set_26 = (curr_close > ema50_curr) and (curr_macd > curr_sig) and (curr_vol > vol_sma * 1.5)
+        set_27 = (curr_rsi < 25) and (curr_rsi > prev_rsi) and (ema9_prev <= ema20_prev and ema9_curr > ema20_curr) and pinbar
+        set_28 = (prev_close <= bb_lower_curr and curr_close > bb_lower_curr) and (ema9_prev <= ema20_prev and ema9_curr > ema20_curr) and (curr_macd > curr_sig)
+        set_29 = (df['close'].iloc[-3] < df['open'].iloc[-3]) and (prev_close < prev_open) and (curr_close > curr_open) and (curr_rsi < 35 and curr_rsi > prev_rsi) and (curr_close > ema20_curr) and (curr_vol > vol_sma * 1.5)
+        set_30 = (curr_close > ema50_curr) and (curr_rsi > prev_rsi) and (prev_close <= bb_lower_curr and curr_close > bb_lower_curr) and (curr_macd > curr_sig) and (curr_vol > vol_sma * 1.5)
+
+        if set_1: return True, "Set 1 (RSI Rebound + EMA50 + MACD + Vol)"
+        if set_2: return True, "Set 2 (RSI <35 + EMA9/20 + Vol)"
+        if set_3: return True, "Set 3 (BB Lower + RSI Rebound + MACD)"
+        if set_4: return True, "Set 4 (RSI <25 + EMA20 + Vol)"
+        if set_5: return True, "Set 5 (EMA9/20 + MACD + Vol)"
+        if set_6: return True, "Set 6 (EMA50 + RSI Rebound + Pinbar)"
+        if set_7: return True, "Set 7 (BB Lower + Pinbar + RSI <35)"
+        if set_8: return True, "Set 8 (3 Red Rev + RSI + Vol)"
+        if set_9: return True, "Set 9 (BB Mid + RSI >50 + MACD)"
+        if set_10: return True, "Set 10 (EMA20 + RSI 35-45 + EMA9/20)"
+        if set_11: return True, "Set 11 (RSI <35 + MACD + Vol)"
+        if set_12: return True, "Set 12 (RSI <25 + Pinbar + MACD)"
+        if set_13: return True, "Set 13 (EMA50 + BB Lower + RSI Rec)"
+        if set_14: return True, "Set 14 (EMA9/20 + RSI 35-45 + Vol)"
+        if set_15: return True, "Set 15 (BB Lower + EMA20 + Vol)"
+        if set_16: return True, "Set 16 (3 Red Rev + Pinbar + RSI + Vol)"
+        if set_17: return True, "Set 17 (EMA50 + EMA9/20 + MACD)"
+        if set_18: return True, "Set 18 (RSI <25 + BB Lower + Vol)"
+        if set_19: return True, "Set 19 (BB Mid + EMA20 + MACD + Vol)"
+        if set_20: return True, "Set 20 (EMA50 + RSI + EMA9/20 + MACD + Vol)"
+        if set_21: return True, "Set 21 (RSI Rebound + BB Lower + EMA20)"
+        if set_22: return True, "Set 22 (RSI <30 + MACD + Vol)"
+        if set_23: return True, "Set 23 (EMA50 + BB Mid + RSI >50)"
+        if set_24: return True, "Set 24 (EMA9/20 + Pinbar + Vol)"
+        if set_25: return True, "Set 25 (RSI <35 + BB Lower + Pinbar + Vol)"
+        if set_26: return True, "Set 26 (EMA50 + MACD + Vol)"
+        if set_27: return True, "Set 27 (RSI <25 + EMA9/20 + Pinbar)"
+        if set_28: return True, "Set 28 (BB Lower + EMA9/20 + MACD)"
+        if set_29: return True, "Set 29 (3 Red + RSI <35 + EMA20 + Vol)"
+        if set_30: return True, "Set 30 (EMA50 + RSI + BB Lower + MACD + Vol)"
 
         return False, None
         
@@ -243,7 +242,7 @@ def coin_trade_worker(symbol):
                         client.cancel_order(symbol=symbol, orderId=order_id)
                         client.create_order(symbol=symbol, side='SELL', type='MARKET', quantity=format_quantity(symbol, total_coins), recvWindow=60000)
                         exit_price = live_p
-                        send_telegram(f"🚨 *[{symbol}] Stop-Loss Triggered*\n• Exit Price: `{live_p}`")
+                        send_telegram(f"🚨 *[{symbol}] Stop-Loss Triggered*\n• Triggered by: `{matched_set}`\n• Exit Price: `{live_p}`")
                         break
                     time.sleep(10)
                 
@@ -251,9 +250,9 @@ def coin_trade_worker(symbol):
                 net_profit = total_revenue - total_cost
                 
                 if trade_successful:
-                    send_telegram(f"✅ *[{symbol}] Cycle Completed (PROFIT)*\n• Net Profit: `+{net_profit:.2f} USDT`\n• Exit Price: `{exit_price}`")
+                    send_telegram(f"✅ *[{symbol}] Cycle Completed (PROFIT)*\n• Trigger: `{matched_set}`\n• Net Profit: `+{net_profit:.2f} USDT`\n• Exit Price: `{exit_price}`")
                 else:
-                    send_telegram(f"❌ *[{symbol}] Cycle Stopped (LOSS)*\n• Net Loss: `{net_profit:.2f} USDT`\n• Exit Price: `{exit_price}`")
+                    send_telegram(f"❌ *[{symbol}] Cycle Stopped (LOSS)*\n• Trigger: `{matched_set}`\n• Net Loss: `{net_profit:.2f} USDT`\n• Exit Price: `{exit_price}`")
                 
                 active_trades[symbol] = False
                     
@@ -264,7 +263,7 @@ def coin_trade_worker(symbol):
         time.sleep(30)
 
 def run_concurrent_bots():
-    msg = f"🚀 *Scalping Bot Started* (Coins: {len(COINS)}, Sets: 30)"
+    msg = f"🚀 *Scalping Bot Started* (Profit: 3%, SL: 2%)"
     print(msg)
     send_telegram(msg)
     
