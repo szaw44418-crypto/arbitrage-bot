@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Scalping Bot (30 Combinations with Daily Performance Report) is running!"
+    return "🤖 Scalping Bot (30 Combinations with Stable Testnet Coins & Daily Performance Report) is running!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -29,10 +29,11 @@ TELEGRAM_CHAT_ID = "6127362073"
 client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
 client.API_URL = f"{SPOT_BASE}/api"
 
+# MATICUSDT အစား Testnet တွင် သေချာပေါက်ရသော SOLUSDT ကို အစားထိုးထားပါသည်
 COINS = [
-    "LTCUSDT", "BCHUSDT", "ETCUSDT", "NEARUSDT", 
-    "ATOMUSDT", "SOLUSDT", "ARBUSDT", "OPUSDT", 
-    "FILUSDT", "ICPUSDT"
+    "BTCUSDT", "ETHUSDT", "XRPUSDT", "DOGEUSDT", 
+    "ADAUSDT", "LINKUSDT", "SUIUSDT", "AVAXUSDT", 
+    "DOTUSDT", "SOLUSDT"
 ]
 
 CAPITAL_PER_ORDER = 10.0  
@@ -142,7 +143,6 @@ def check_market_conditions(symbol):
 
         pinbar = ((min(curr_open, curr_close) - df['low'].iloc[-1]) > (abs(curr_open - curr_close) * 2))
 
-        # တောင်းဆိုထားသော Combination Set ၃၀
         c_sets = {
             "#01": (curr_rsi > prev_rsi) and (curr_close > ema50_curr) and (curr_macd > curr_sig) and (curr_vol > vol_sma * 1.5),
             "#02": (curr_rsi < 35) and (curr_rsi > prev_rsi) and (ema9_prev <= ema20_prev and ema9_curr > ema20_curr) and (curr_vol > vol_sma * 1.5),
@@ -245,7 +245,6 @@ def coin_trade_worker(symbol):
                 
                 time_str = datetime.datetime.now().strftime('%H:%M')
                 
-                # Telegram သို့ Signal ပို့ခြင်း
                 send_telegram(
                     f"{combo_id}\n"
                     f"`{symbol}`\n"
@@ -282,7 +281,6 @@ def coin_trade_worker(symbol):
                         break
                     time.sleep(10)
                 
-                # Data Collection (မှတ်တမ်းသိမ်းဆည်းခြင်း)
                 lock_data = load_data()
                 lock_data["history"].append({
                     "sig_id": sig_id,
@@ -293,7 +291,6 @@ def coin_trade_worker(symbol):
                 })
                 save_data(lock_data)
                 
-                # Result ကို Telegram သို့ ပို့ခြင်း
                 send_telegram(
                     f"Signal ID: `{sig_id}`\n"
                     f"Pair: `{symbol}`\n"
@@ -312,7 +309,6 @@ def coin_trade_worker(symbol):
         time.sleep(30)
 
 def daily_report_worker():
-    """ နေ့စဉ် Combination ၃၀ လုံး၏ ရလဒ်များကို နှိုင်းယှဉ်ထုတ်ပြန်ပေးရန် """
     while True:
         now = datetime.datetime.now()
         target_time = now.replace(hour=23, minute=59, second=0, microsecond=0)
