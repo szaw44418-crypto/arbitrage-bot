@@ -4,7 +4,7 @@ import math
 import requests
 import datetime
 import json
-from threading import Thread
+from threading import Thread, Lock
 from flask import Flask
 import pandas as pd
 from binance.client import Client
@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Advanced Multi-Strategy Bot with Daily Summary is running successfully!"
+    return "🤖 Optimized Multi-Strategy Bot is running successfully!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -39,6 +39,7 @@ DAILY_LOSS_LIMIT = -2.0
 symbol_info_cache = {}
 active_trades = {}  
 DATA_FILE = "advanced_multi_strategy_data.json"
+api_lock = Lock()
 
 def load_data():
     default_strategies = {
@@ -158,7 +159,8 @@ def daily_report_scheduler():
 def get_symbol_filter(symbol, filter_type):
     if symbol not in symbol_info_cache:
         try:
-            info = client.futures_exchange_info()
+            with api_lock:
+                info = client.futures_exchange_info()
             for s in info['symbols']:
                 symbol_info_cache[s['symbol']] = s
         except Exception: return None
@@ -182,21 +184,23 @@ def format_quantity(symbol, qty):
 
 def close_all_positions(reason="Limit Hit"):
     try:
-        for symbol in COINS:
-            pos_info = client.futures_position_information(symbol=symbol)
-            for pos in pos_info:
-                amt = float(pos['positionAmt'])
-                if amt != 0:
-                    side = 'SELL' if amt > 0 else 'BUY'
-                    client.futures_create_order(symbol=symbol, side=side, type='MARKET', quantity=abs(amt))
-                    send_telegram(f"⚠️ *{symbol}* active position ကို အလိုအလျောက် ပိတ်လိုက်ပါပြီ။ အကြောင်းရင်း: *{reason}*")
-            client.futures_cancel_all_open_orders(symbol=symbol)
+        with api_lock:
+            for symbol in COINS:
+                pos_info = client.futures_position_information(symbol=symbol)
+                for pos in pos_info:
+                    amt = float(pos['positionAmt'])
+                    if amt != 0:
+                        side = 'SELL' if amt > 0 else 'BUY'
+                        client.futures_create_order(symbol=symbol, side=side, type='MARKET', quantity=abs(amt))
+                        send_telegram(f"⚠️ *{symbol}* active position ကို အလိုအလျောက် ပိတ်လိုက်ပါပြီ။ အကြောင်းရင်း: *{reason}*")
+                client.futures_cancel_all_open_orders(symbol=symbol)
     except Exception as e:
         print(f"Error during emergency close: {e}")
 
 def check_all_strategies_signal(symbol):
     try:
-        klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=250)
+        with api_lock:
+            klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=250)
         if not klines or len(klines) < 210: return None, 0, 0, ""
         
         df = pd.DataFrame(klines, columns=[
@@ -251,13 +255,11 @@ def check_all_strategies_signal(symbol):
         recent_low = df['low'].iloc[-10:-1].min()
         recent_high = df['high'].iloc[-10:-1].max()
 
-        # 1. Volume Profile + POC Rejection
         if abs(c_low - poc_price) / poc_price < 0.005 and is_green_reversal:
             return "LONG", recent_low, df['EMA10'].iloc[-2], "Volume_Profile_POC"
         if abs(c_high - poc_price) / poc_price < 0.005 and is_red_reversal:
             return "SHORT", recent_high, df['EMA10'].iloc[-2], "Volume_Profile_POC"
 
-        # 2. Bollinger Bands Breakout + 200 EMA
         bb_width = (df['BB_upper'].iloc[-2] - df['BB_lower'].iloc[-2]) / df['BB_middle'].iloc[-2]
         is_squeeze = bb_width < 0.03
         
@@ -267,7 +269,6 @@ def check_all_strategies_signal(symbol):
             if c_close < df['EMA200'].iloc[-2] and c_close < df['BB_lower'].iloc[-2]:
                 return "SHORT", recent_high, df['EMA10'].iloc[-2], "BB_Squeeze_Breakout"
 
-        # 3. Stochastic RSI + 50 EMA Micro-Pullback
         stoch_k = df['StochRSI_K'].iloc[-2]
         stoch_d = df['StochRSI_D'].iloc[-2]
         prev_stoch_k = df['StochRSI_K'].iloc[-3]
@@ -292,10 +293,11 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
     tp1_hit = False
     
     try:
-        tp1_order = client.futures_create_order(
-            symbol=symbol, side=tp_side, type='LIMIT', timeInForce='GTC',
-            quantity=half_qty, price=str(tp1_price), recvWindow=60000
-        )
+        with api_lock:
+            tp1_order = client.futures_create_order(
+                symbol=symbol, side=tp_side, type='LIMIT', timeInForce='GTC',
+                quantity=half_qty, price=str(tp1_price), recvWindow=60000
+            )
         tp1_order_id = tp1_order['orderId']
     except Exception as e:
         print(f"⚠️ Limit TP1 Order Error: {e}")
@@ -310,19 +312,22 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                 close_all_positions("Daily PnL Boundary Crossed inside Monitor")
                 break
 
-            ticker = client.futures_symbol_ticker(symbol=symbol)
+            with api_lock:
+                ticker = client.futures_symbol_ticker(symbol=symbol)
             curr_price = float(ticker['price'])
             
             if side == "LONG":
                 if curr_price <= stop_loss_price:
-                    client.futures_cancel_all_open_orders(symbol=symbol)
+                    with api_lock:
+                        client.futures_cancel_all_open_orders(symbol=symbol)
                     loss_amount = (stop_loss_price - exec_price) * total_qty
                     update_daily_pnl(loss_amount, strat_name, is_win=False)
                     send_telegram(f"🛑 *{symbol} LONG SL Hit!* [{strat_name}] Price: `{curr_price}` | Loss: `{round(loss_amount, 2)} USDT`")
                     break
                 
                 if not tp1_hit:
-                    order_status = client.futures_get_order(symbol=symbol, orderId=tp1_order_id)
+                    with api_lock:
+                        order_status = client.futures_get_order(symbol=symbol, orderId=tp1_order_id)
                     if order_status['status'] == 'FILLED':
                         tp1_hit = True
                         stop_loss_price = exec_price  
@@ -330,7 +335,8 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                         update_daily_pnl(profit_tp1)
                         send_telegram(f"🎯 *{symbol} LONG TP1 Hit!* [{strat_name}] SL moved to Break-even `{exec_price}`")
                 else:
-                    klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=5)
+                    with api_lock:
+                        klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=5)
                     last_candle_close = float(klines[-2][4])
                     df_check = pd.DataFrame(klines, columns=[
                         'open_time', 'open', 'high', 'low', 'close', 'volume',
@@ -340,7 +346,8 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                     ema10_curr = df_check['close'].astype(float).ewm(span=10, adjust=False).mean().iloc[-2]
                     
                     if last_candle_close < ema10_curr or curr_price <= exec_price:
-                        client.futures_create_order(symbol=symbol, side=tp_side, type='MARKET', quantity=half_qty)
+                        with api_lock:
+                            client.futures_create_order(symbol=symbol, side=tp_side, type='MARKET', quantity=half_qty)
                         profit_tp2 = (curr_price - exec_price) * half_qty
                         update_daily_pnl(profit_tp2, strat_name, is_win=True)
                         send_telegram(f"🏁 *{symbol} LONG Exit Hit!* [{strat_name}] Closed remaining half.")
@@ -348,14 +355,16 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
 
             elif side == "SHORT":
                 if curr_price >= stop_loss_price:
-                    client.futures_cancel_all_open_orders(symbol=symbol)
+                    with api_lock:
+                        client.futures_cancel_all_open_orders(symbol=symbol)
                     loss_amount = (stop_loss_price - exec_price) * total_qty
                     update_daily_pnl(loss_amount, strat_name, is_win=False)
                     send_telegram(f"🛑 *{symbol} SHORT SL Hit!* [{strat_name}] Price: `{curr_price}` | Loss: `{round(loss_amount, 2)} USDT`")
                     break
                 
                 if not tp1_hit:
-                    order_status = client.futures_get_order(symbol=symbol, orderId=tp1_order_id)
+                    with api_lock:
+                        order_status = client.futures_get_order(symbol=symbol, orderId=tp1_order_id)
                     if order_status['status'] == 'FILLED':
                         tp1_hit = True
                         stop_loss_price = exec_price  
@@ -363,7 +372,8 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                         update_daily_pnl(profit_tp1)
                         send_telegram(f"🎯 *{symbol} SHORT TP1 Hit!* [{strat_name}] SL moved to Break-even `{exec_price}`")
                 else:
-                    klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=5)
+                    with api_lock:
+                        klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=5)
                     last_candle_close = float(klines[-2][4])
                     df_check = pd.DataFrame(klines, columns=[
                         'open_time', 'open', 'high', 'low', 'close', 'volume',
@@ -373,38 +383,42 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                     ema10_curr = df_check['close'].astype(float).ewm(span=10, adjust=False).mean().iloc[-2]
                     
                     if last_candle_close > ema10_curr or curr_price >= exec_price:
-                        client.futures_create_order(symbol=symbol, side=tp_side, type='MARKET', quantity=half_qty)
+                        with api_lock:
+                            client.futures_create_order(symbol=symbol, side=tp_side, type='MARKET', quantity=half_qty)
                         profit_tp2 = (exec_price - curr_price) * half_qty
                         update_daily_pnl(profit_tp2, strat_name, is_win=True)
                         send_telegram(f"🏁 *{symbol} SHORT Exit Hit!* [{strat_name}] Closed remaining half.")
                         break
 
-            # Rate Limit မမိစေရန် Monitoring Loop ကို ၁၅ စက္ကန့်သို့ တိုးမြှင့်ထားသည်
             time.sleep(15)
         except Exception as e:
             print(f"Monitoring Error on {symbol}: {e}")
             time.sleep(15)
             
     try:
-        client.futures_cancel_all_open_orders(symbol=symbol)
-        pos_info = client.futures_position_information(symbol=symbol)
-        for pos in pos_info:
-            if float(pos['positionAmt']) != 0:
-                close_side = 'SELL' if float(pos['positionAmt']) > 0 else 'BUY'
-                client.futures_create_order(symbol=symbol, side=close_side, type='MARKET', quantity=abs(float(pos['positionAmt'])))
+        with api_lock:
+            client.futures_cancel_all_open_orders(symbol=symbol)
+            pos_info = client.futures_position_information(symbol=symbol)
+            for pos in pos_info:
+                if float(pos['positionAmt']) != 0:
+                    close_side = 'SELL' if float(pos['positionAmt']) > 0 else 'BUY'
+                    client.futures_create_order(symbol=symbol, side=close_side, type='MARKET', quantity=abs(float(pos['positionAmt'])))
     except Exception as e:
         print(f"Cleanup error for {symbol}: {e}")
         
     active_trades[symbol] = False
 
-def coin_trade_worker(symbol):
-    print(f"🔄 Advanced Worker active for {symbol}...")
+def market_scanner_loop():
+    print("🔄 Optimized Market Scanner active...")
     try:
-        client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
+        with api_lock:
+            for symbol in COINS:
+                try:
+                    client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
+                except:
+                    pass
     except:
         pass
-
-    time.sleep(5)
 
     while True:
         try:
@@ -413,48 +427,54 @@ def coin_trade_worker(symbol):
                 time.sleep(60)
                 continue
 
-            if active_trades.get(symbol, False):
-                time.sleep(30)
-                continue
+            for symbol in COINS:
+                if active_trades.get(symbol, False):
+                    continue
 
-            side, swing_val, ema10_val, strat_name = check_all_strategies_signal(symbol)
-            if side:
-                record_signal(strat_name) 
-                active_trades[symbol] = True
-                curr_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
+                side, swing_val, ema10_val, strat_name = check_all_strategies_signal(symbol)
+                if side:
+                    record_signal(strat_name) 
+                    active_trades[symbol] = True
+                    with api_lock:
+                        curr_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
+                    
+                    notional_size = TOTAL_MARGIN * LEVERAGE
+                    total_qty = format_quantity(symbol, notional_size / curr_price)
+                    
+                    order_side = 'BUY' if side == 'LONG' else 'SELL'
+                    with api_lock:
+                        order = client.futures_create_order(symbol=symbol, side=order_side, type='MARKET', quantity=total_qty, recvWindow=60000)
+                    exec_price = float(order.get('avgPrice', curr_price))
+                    
+                    if side == 'LONG':
+                        stop_loss_price = format_price(symbol, min(exec_price * 0.98, swing_val * 0.998))
+                        sl_distance = exec_price - stop_loss_price
+                        tp1_price = format_price(symbol, exec_price + sl_distance)
+                    else:
+                        stop_loss_price = format_price(symbol, max(exec_price * 1.02, swing_val * 1.002))
+                        sl_distance = stop_loss_price - exec_price
+                        tp1_price = format_price(symbol, exec_price - sl_distance)
+                    
+                    send_telegram(
+                        f"🚀 *ADVANCED SIGNAL MATCHED [{strat_name}]*\n"
+                        f"Pair: `{symbol}` | Side: `{side}` | Entry: `{exec_price}`\n"
+                        f"TP1 (1:1): `{tp1_price}` | SL: `{stop_loss_price}`"
+                    )
+                    
+                    t = Thread(target=monitor_trade_execution, args=(symbol, side, exec_price, tp1_price, stop_loss_price, total_qty, strat_name))
+                    t.daemon = True
+                    t.start()
                 
-                notional_size = TOTAL_MARGIN * LEVERAGE
-                total_qty = format_quantity(symbol, notional_size / curr_price)
-                
-                order_side = 'BUY' if side == 'LONG' else 'SELL'
-                order = client.futures_create_order(symbol=symbol, side=order_side, type='MARKET', quantity=total_qty, recvWindow=60000)
-                exec_price = float(order.get('avgPrice', curr_price))
-                
-                if side == 'LONG':
-                    stop_loss_price = format_price(symbol, min(exec_price * 0.98, swing_val * 0.998))
-                    sl_distance = exec_price - stop_loss_price
-                    tp1_price = format_price(symbol, exec_price + sl_distance)
-                else:
-                    stop_loss_price = format_price(symbol, max(exec_price * 1.02, swing_val * 1.002))
-                    sl_distance = stop_loss_price - exec_price
-                    tp1_price = format_price(symbol, exec_price - sl_distance)
-                
-                send_telegram(
-                    f"🚀 *ADVANCED SIGNAL MATCHED [{strat_name}]*\n"
-                    f"Pair: `{symbol}` | Side: `{side}` | Entry: `{exec_price}`\n"
-                    f"TP1 (1:1): `{tp1_price}` | SL: `{stop_loss_price}`"
-                )
-                
-                monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price, total_qty, strat_name)
+                # API Rate Limit မမိစေရန် Coin တစ်ခုချင်းစီကြားတွင် ၃ စက္ကန့်စီ ခြားထားသည်
+                time.sleep(3)
                 
         except Exception as e:
-            print(f"Error in worker {symbol}: {e}")
-            active_trades[symbol] = False
+            print(f"Error in scanner loop: {e}")
         
-        time.sleep(60)
+        time.sleep(15)
 
 def run_concurrent_bots():
-    msg = f"🚀 *Advanced Multi-Strategy Bot Running* (Strategies: Volume Profile POC, BB Squeeze Breakout, StochRSI Pullback)"
+    msg = f"🚀 *Optimized Multi-Strategy Bot Running* (Strategies: Volume Profile POC, BB Squeeze Breakout, StochRSI Pullback)"
     print(msg)
     send_telegram(msg)
     
@@ -462,16 +482,10 @@ def run_concurrent_bots():
     scheduler_thread.daemon = True
     scheduler_thread.start()
     
-    threads = []
-    for symbol in COINS:
-        t = Thread(target=coin_trade_worker, args=(symbol,))
-        t.daemon = True
-        t.start()
-        threads.append(t)
-        time.sleep(5)
-        
-    for t in threads:
-        t.join()
+    scanner_thread = Thread(target=market_scanner_loop)
+    scanner_thread.daemon = True
+    scanner_thread.start()
+    scanner_thread.join()
 
 if __name__ == "__main__":
     bot_thread = Thread(target=run_concurrent_bots)
