@@ -199,7 +199,6 @@ def check_all_strategies_signal(symbol):
         klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=250)
         if not klines or len(klines) < 210: return None, 0, 0, ""
         
-        # Binance klines standard columns mapping to prevent KeyError
         df = pd.DataFrame(klines, columns=[
             'open_time', 'open', 'high', 'low', 'close', 'volume',
             'close_time', 'quote_asset_volume', 'number_of_trades',
@@ -380,10 +379,11 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                         send_telegram(f"🏁 *{symbol} SHORT Exit Hit!* [{strat_name}] Closed remaining half.")
                         break
 
-            time.sleep(5)
+            # Rate Limit မမိစေရန် Monitoring Loop ကို ၁၅ စက္ကန့်သို့ တိုးမြှင့်ထားသည်
+            time.sleep(15)
         except Exception as e:
             print(f"Monitoring Error on {symbol}: {e}")
-            time.sleep(10)
+            time.sleep(15)
             
     try:
         client.futures_cancel_all_open_orders(symbol=symbol)
@@ -404,7 +404,6 @@ def coin_trade_worker(symbol):
     except:
         pass
 
-    # စတင်ချိန်တွင် API Rate Limit မမိစေရန် Coin တစ်ခုချင်းစီ အနည်းငယ်စီ စောင့်ပေးခြင်း
     time.sleep(5)
 
     while True:
@@ -452,7 +451,6 @@ def coin_trade_worker(symbol):
             print(f"Error in worker {symbol}: {e}")
             active_trades[symbol] = False
         
-        # Rate Limit (-1003) ထပ်မံမဖြစ်ပွားစေရန် Coin တစ်ခုချင်းစီကို ၁ မိနစ် (၆၀ စက္ကန့်) မှ အနည်းဆုံး အနားပေးခြင်း
         time.sleep(60)
 
 def run_concurrent_bots():
@@ -470,7 +468,6 @@ def run_concurrent_bots():
         t.daemon = True
         t.start()
         threads.append(t)
-        # Request တွေ တစ်ပြိုင်နက် မဝင်သွားစေရန် ကြားထဲတွင် ၅ စက္ကန့်စီ ခြားပေးပါ
         time.sleep(5)
         
     for t in threads:
