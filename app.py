@@ -8,13 +8,12 @@ from threading import Thread, Lock
 from flask import Flask
 import pandas as pd
 from binance.client import Client
-from binance import ThreadedWebsocketManager
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 WebSocket-Powered Multi-Strategy Bot is running successfully!"
+    return "🤖 Rate-Limit Free 6-Strategy Multi-Bot is running successfully!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -40,14 +39,20 @@ DAILY_LOSS_LIMIT = -2.0
 symbol_info_cache = {}
 active_trades = {}  
 latest_prices = {}
-DATA_FILE = "advanced_multi_strategy_data.json"
+klines_cache = {}
+last_kline_fetch_time = {}
+
+DATA_FILE = "advanced_6_strategy_data.json"
 api_lock = Lock()
 
 def load_data():
     default_strategies = {
         "Volume_Profile_POC": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
         "BB_Squeeze_Breakout": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
-        "StochRSI_Pullback": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0}
+        "StochRSI_Pullback": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
+        "MACD_Crossover": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
+        "RSI_Reversal": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
+        "EMA10_RSI_Pullback": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0}
     }
     if os.path.exists(DATA_FILE):
         try:
@@ -55,6 +60,10 @@ def load_data():
                 data = json.load(f)
                 if "strategies" not in data:
                     data["strategies"] = default_strategies
+                else:
+                    for s_key in default_strategies:
+                        if s_key not in data["strategies"]:
+                            data["strategies"][s_key] = default_strategies[s_key]
                 return data
         except:
             pass
@@ -122,7 +131,7 @@ def send_daily_summary():
     data = load_data()
     strategies = data.get("strategies", {})
     
-    msg = "📊 *DAILY STRATEGY PERFORMANCE REPORT*\n"
+    msg = "📊 *DAILY 6-STRATEGY PERFORMANCE REPORT*\n"
     msg += f"📅 Date: `{data.get('date')}`\n\n"
     
     idx = 1
@@ -138,9 +147,7 @@ def send_daily_summary():
         
         sign_char = "+" if net_pnl_pct >= 0 else ""
         msg += f"*Strategy #{idx:02d} ({s_name})*\n"
-        msg += f"Signals: `{signals}`\n"
-        msg += f"Win: `{wins}`\n"
-        msg += f"Loss: `{losses}`\n"
+        msg += f"Signals: `{signals}` | Win: `{wins}` | Loss: `{losses}`\n"
         msg += f"Win Rate: `{round(win_rate, 1)}%`\n"
         msg += f"Net P&L: `{sign_char}{round(net_pnl_pct, 1)}%` ({round(net_pnl_usdt, 2)} USDT)\n\n"
         idx += 1
@@ -199,10 +206,35 @@ def close_all_positions(reason="Limit Hit"):
     except Exception as e:
         print(f"Error during emergency close: {e}")
 
-def check_all_strategies_signal(symbol):
+def get_cached_klines(symbol):
+    current_time = time.time()
+    if symbol in klines_cache and (current_time - last_kline_fetch_time.get(symbol, 0)) < 300:
+        return klines_cache[symbol]
+    
     try:
         with api_lock:
             klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=250)
+        if klines:
+            klines_cache[symbol] = klines
+            last_kline_fetch_time[symbol] = current_time
+            return klines
+    except Exception as e:
+        print(f"Kline Fetch Error for {symbol}: {e}")
+    
+    return klines_cache.get(symbol, None)
+
+def check_all_strategies_signal(symbol):
+    """
+    ဗျူဟာ ၆ မျိုးစလုံး၏ LONG / SHORT အချက်ပြမှုများကို အသေးစိတ် တွက်ချက်စစ်ဆေးခြင်း
+    ၁။ Volume Profile + POC Rejection
+    ၂။ Bollinger Bands Breakout + 200 EMA
+    ၃။ Stochastic RSI + 50 EMA Micro-Pullback
+    ၄။ MACD Crossover Strategy
+    ၅။ RSI Overbought / Oversold Reversal Strategy
+    ၆။ 10 EMA Pullback + RSI (30-40) Strategy
+    """
+    try:
+        klines = get_cached_klines(symbol)
         if not klines or len(klines) < 210: return None, 0, 0, ""
         
         df = pd.DataFrame(klines, columns=[
@@ -217,27 +249,38 @@ def check_all_strategies_signal(symbol):
         df['close'] = df['close'].astype(float)
         df['volume'] = df['volume'].astype(float)
         
+        # --- [INDICATORS တွက်ချက်ခြင်း] ---
         df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
         df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['EMA10'] = df['close'].ewm(span=10, adjust=False).mean()
         
+        # Bollinger Bands (20, 2)
         df['BB_middle'] = df['close'].rolling(window=20).mean()
         df['BB_std'] = df['close'].rolling(window=20).std()
         df['BB_upper'] = df['BB_middle'] + (2 * df['BB_std'])
         df['BB_lower'] = df['BB_middle'] - (2 * df['BB_std'])
         
+        # Standard RSI (14)
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).ewm(com=13, adjust=False).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(com=13, adjust=False).mean()
         df['RSI'] = 100 - (100 / (1 + (gain / loss)))
         
+        # Stochastic RSI (14, 3, 3)
         stoch_rsi_window = 14
         df['RSI_min'] = df['RSI'].rolling(window=stoch_rsi_window).min()
         df['RSI_max'] = df['RSI'].rolling(window=stoch_rsi_window).max()
         df['StochRSI'] = (df['RSI'] - df['RSI_min']) / (df['RSI_max'] - df['RSI_min'] + 1e-10)
         df['StochRSI_K'] = df['StochRSI'].rolling(window=3).mean() * 100
         df['StochRSI_D'] = df['StochRSI_K'].rolling(window=3).mean()
+
+        # MACD (12, 26, 9)
+        exp1 = df['close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         
+        # --- [VOLUME PROFILE + POC တွက်ချက်မှု] ---
         vp_df = df.iloc[-100:].copy()
         price_bins = pd.cut(vp_df['close'], bins=20)
         poc_bin = vp_df.groupby(price_bins, observed=False)['volume'].sum().idxmax()
@@ -257,11 +300,17 @@ def check_all_strategies_signal(symbol):
         recent_low = df['low'].iloc[-10:-1].min()
         recent_high = df['high'].iloc[-10:-1].max()
 
+        # =========================================================================
+        # ဗျူဟာ (၁) Volume Profile + POC Rejection
+        # =========================================================================
         if abs(c_low - poc_price) / poc_price < 0.005 and is_green_reversal:
             return "LONG", recent_low, df['EMA10'].iloc[-2], "Volume_Profile_POC"
         if abs(c_high - poc_price) / poc_price < 0.005 and is_red_reversal:
             return "SHORT", recent_high, df['EMA10'].iloc[-2], "Volume_Profile_POC"
 
+        # =========================================================================
+        # ဗျူဟာ (၂) Bollinger Bands Breakout + 200 EMA
+        # =========================================================================
         bb_width = (df['BB_upper'].iloc[-2] - df['BB_lower'].iloc[-2]) / df['BB_middle'].iloc[-2]
         is_squeeze = bb_width < 0.03
         
@@ -271,6 +320,9 @@ def check_all_strategies_signal(symbol):
             if c_close < df['EMA200'].iloc[-2] and c_close < df['BB_lower'].iloc[-2]:
                 return "SHORT", recent_high, df['EMA10'].iloc[-2], "BB_Squeeze_Breakout"
 
+        # =========================================================================
+        # ဗျူဟာ (၃) Stochastic RSI + 50 EMA Micro-Pullback
+        # =========================================================================
         stoch_k = df['StochRSI_K'].iloc[-2]
         stoch_d = df['StochRSI_D'].iloc[-2]
         prev_stoch_k = df['StochRSI_K'].iloc[-3]
@@ -283,6 +335,46 @@ def check_all_strategies_signal(symbol):
         if c_close < df['EMA50'].iloc[-2] and (c_high >= df['EMA50'].iloc[-2] or c_close >= df['EMA10'].iloc[-2]):
             if (prev_stoch_k > prev_stoch_d) and (stoch_k < stoch_d) and stoch_k > 80 and is_red_reversal:
                 return "SHORT", recent_high, df['EMA10'].iloc[-2], "StochRSI_Pullback"
+
+        # =========================================================================
+        # ဗျူဟာ (၄) MACD Crossover Strategy
+        # =========================================================================
+        macd_curr = df['MACD'].iloc[-2]
+        macd_sig_curr = df['MACD_Signal'].iloc[-2]
+        macd_prev = df['MACD'].iloc[-3]
+        macd_sig_prev = df['MACD_Signal'].iloc[-3]
+
+        if (macd_prev <= macd_sig_prev) and (macd_curr > macd_sig_curr) and (c_close > df['EMA50'].iloc[-2]):
+            return "LONG", recent_low, df['EMA10'].iloc[-2], "MACD_Crossover"
+
+        if (macd_prev >= macd_sig_prev) and (macd_curr < macd_sig_curr) and (c_close < df['EMA50'].iloc[-2]):
+            return "SHORT", recent_high, df['EMA10'].iloc[-2], "MACD_Crossover"
+
+        # =========================================================================
+        # ဗျူဟာ (၅) RSI Overbought / Oversold Reversal Strategy
+        # =========================================================================
+        rsi_curr = df['RSI'].iloc[-2]
+        rsi_prev = df['RSI'].iloc[-3]
+
+        if (rsi_prev < 30) and (rsi_curr >= 30) and is_green_reversal:
+            return "LONG", recent_low, df['EMA10'].iloc[-2], "RSI_Reversal"
+
+        if (rsi_prev > 70) and (rsi_curr <= 70) and is_red_reversal:
+            return "SHORT", recent_high, df['EMA10'].iloc[-2], "RSI_Reversal"
+
+        # =========================================================================
+        # ဗျူဟာ (၆) 10 EMA Pullback + RSI (30-40 / 60-70) Strategy
+        # =========================================================================
+        ema200_val = df['EMA200'].iloc[-2]
+        ema10_val = df['EMA10'].iloc[-2]
+
+        # LONG Rule: 200 EMA အပေါ်, ဈေးက 10 EMA ကိုထိ/အောက်ဆင်း, RSI (30-40), Green Reversal Candle
+        if (c_close > ema200_val) and (c_low <= ema10_val or c_close <= ema10_val) and (30 <= rsi_curr < 40) and is_green_reversal:
+            return "LONG", recent_low, ema10_val, "EMA10_RSI_Pullback"
+
+        # SHORT Rule: 200 EMA အောက်, ဈေးက 10 EMA ကိုထိ/အပေါ်တက်, RSI (60-70), Red Reversal Candle
+        if (c_close < ema200_val) and (c_high >= ema10_val or c_close >= ema10_val) and (60 < rsi_curr <= 70) and is_red_reversal:
+            return "SHORT", recent_high, ema10_val, "EMA10_RSI_Pullback"
 
         return None, 0, 0, ""
     except Exception as e:
@@ -306,7 +398,7 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
         active_trades[symbol] = False
         return
 
-    print(f"📡 WebSocket Monitoring {symbol} {side} [{strat_name}] position...")
+    print(f"📡 Monitoring {symbol} {side} [{strat_name}] position...")
     while True:
         try:
             is_stopped, current_pnl = check_daily_limit()
@@ -319,6 +411,23 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                 with api_lock:
                     curr_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
             
+            klines = get_cached_klines(symbol)
+            df_check = pd.DataFrame(klines, columns=[
+                'open_time', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_asset_volume', 'number_of_trades',
+                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+            ])
+            df_check['close'] = df_check['close'].astype(float)
+            
+            delta = df_check['close'].diff()
+            gain = (delta.where(delta > 0, 0)).ewm(com=13, adjust=False).mean()
+            loss = (-delta.where(delta < 0, 0)).ewm(com=13, adjust=False).mean()
+            df_check['RSI'] = 100 - (100 / (1 + (gain / loss)))
+            
+            last_rsi = df_check['RSI'].iloc[-2]
+            last_candle_close = df_check['close'].iloc[-2]
+            ema10_curr = df_check['close'].ewm(span=10, adjust=False).mean().iloc[-2]
+
             if side == "LONG":
                 if curr_price <= stop_loss_price:
                     with api_lock:
@@ -338,17 +447,7 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                         update_daily_pnl(profit_tp1)
                         send_telegram(f"🎯 *{symbol} LONG TP1 Hit!* [{strat_name}] SL moved to Break-even `{exec_price}`")
                 else:
-                    with api_lock:
-                        klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=5)
-                    last_candle_close = float(klines[-2][4])
-                    df_check = pd.DataFrame(klines, columns=[
-                        'open_time', 'open', 'high', 'low', 'close', 'volume',
-                        'close_time', 'quote_asset_volume', 'number_of_trades',
-                        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-                    ])
-                    ema10_curr = df_check['close'].astype(float).ewm(span=10, adjust=False).mean().iloc[-2]
-                    
-                    if last_candle_close < ema10_curr or curr_price <= exec_price:
+                    if last_rsi >= 70 or last_candle_close < ema10_curr or curr_price <= exec_price:
                         with api_lock:
                             client.futures_create_order(symbol=symbol, side=tp_side, type='MARKET', quantity=half_qty)
                         profit_tp2 = (curr_price - exec_price) * half_qty
@@ -375,17 +474,7 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                         update_daily_pnl(profit_tp1)
                         send_telegram(f"🎯 *{symbol} SHORT TP1 Hit!* [{strat_name}] SL moved to Break-even `{exec_price}`")
                 else:
-                    with api_lock:
-                        klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=5)
-                    last_candle_close = float(klines[-2][4])
-                    df_check = pd.DataFrame(klines, columns=[
-                        'open_time', 'open', 'high', 'low', 'close', 'volume',
-                        'close_time', 'quote_asset_volume', 'number_of_trades',
-                        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-                    ])
-                    ema10_curr = df_check['close'].astype(float).ewm(span=10, adjust=False).mean().iloc[-2]
-                    
-                    if last_candle_close > ema10_curr or curr_price >= exec_price:
+                    if last_rsi <= 30 or last_candle_close > ema10_curr or curr_price >= exec_price:
                         with api_lock:
                             client.futures_create_order(symbol=symbol, side=tp_side, type='MARKET', quantity=half_qty)
                         profit_tp2 = (exec_price - curr_price) * half_qty
@@ -412,7 +501,7 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
     active_trades[symbol] = False
 
 def market_scanner_loop():
-    print("🔄 WebSocket Market Scanner active...")
+    print("🔄 Rate-Limit Free 6-Strategy Market Scanner active...")
     try:
         with api_lock:
             for symbol in COINS:
@@ -461,7 +550,7 @@ def market_scanner_loop():
                         tp1_price = format_price(symbol, exec_price - sl_distance)
                     
                     send_telegram(
-                        f"🚀 *WEBSOCKET SIGNAL MATCHED [{strat_name}]*\n"
+                        f"🚀 *6-STRATEGY SIGNAL MATCHED [{strat_name}]*\n"
                         f"Pair: `{symbol}` | Side: `{side}` | Entry: `{exec_price}`\n"
                         f"TP1 (1:1): `{tp1_price}` | SL: `{stop_loss_price}`"
                     )
@@ -470,12 +559,12 @@ def market_scanner_loop():
                     t.daemon = True
                     t.start()
                 
-                time.sleep(5)
+                time.sleep(10)
                 
         except Exception as e:
             print(f"Error in scanner loop: {e}")
         
-        time.sleep(20)
+        time.sleep(30)
 
 def handle_socket_message(msg):
     if msg.get('e') == 'bookTicker':
@@ -485,6 +574,7 @@ def handle_socket_message(msg):
             latest_prices[symbol] = best_price
 
 def start_websocket():
+    from binance import ThreadedWebsocketManager
     twm = ThreadedWebsocketManager(api_key=FUTURES_API_KEY, api_secret=FUTURES_SECRET_KEY, testnet=True)
     twm.start()
     
@@ -493,7 +583,7 @@ def start_websocket():
     print("📡 Binance Futures WebSocket Stream Connected.")
 
 def run_concurrent_bots():
-    msg = f"🚀 *WebSocket Multi-Strategy Bot Running* (Strategies: Volume Profile POC, BB Squeeze Breakout, StochRSI Pullback)"
+    msg = f"🚀 *Rate-Limit Free 6-Strategy Bot Running* (Strategies: POC, BB Squeeze, StochRSI, MACD, RSI Reversal, 10EMA Pullback)"
     print(msg)
     send_telegram(msg)
     
