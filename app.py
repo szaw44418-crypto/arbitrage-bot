@@ -8,12 +8,13 @@ from threading import Thread, Lock
 from flask import Flask
 import pandas as pd
 from binance.client import Client
+from binance import ThreadedWebsocketManager
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Optimized Multi-Strategy Bot is running successfully!"
+    return "🤖 WebSocket-Powered Multi-Strategy Bot is running successfully!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -38,6 +39,7 @@ DAILY_LOSS_LIMIT = -2.0
 
 symbol_info_cache = {}
 active_trades = {}  
+latest_prices = {}
 DATA_FILE = "advanced_multi_strategy_data.json"
 api_lock = Lock()
 
@@ -304,7 +306,7 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
         active_trades[symbol] = False
         return
 
-    print(f"📡 Monitoring {symbol} {side} [{strat_name}] position...")
+    print(f"📡 WebSocket Monitoring {symbol} {side} [{strat_name}] position...")
     while True:
         try:
             is_stopped, current_pnl = check_daily_limit()
@@ -312,9 +314,10 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                 close_all_positions("Daily PnL Boundary Crossed inside Monitor")
                 break
 
-            with api_lock:
-                ticker = client.futures_symbol_ticker(symbol=symbol)
-            curr_price = float(ticker['price'])
+            curr_price = latest_prices.get(symbol, 0.0)
+            if curr_price == 0.0:
+                with api_lock:
+                    curr_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
             
             if side == "LONG":
                 if curr_price <= stop_loss_price:
@@ -390,10 +393,10 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                         send_telegram(f"🏁 *{symbol} SHORT Exit Hit!* [{strat_name}] Closed remaining half.")
                         break
 
-            time.sleep(15)
+            time.sleep(10)
         except Exception as e:
             print(f"Monitoring Error on {symbol}: {e}")
-            time.sleep(15)
+            time.sleep(10)
             
     try:
         with api_lock:
@@ -409,7 +412,7 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
     active_trades[symbol] = False
 
 def market_scanner_loop():
-    print("🔄 Optimized Market Scanner active...")
+    print("🔄 WebSocket Market Scanner active...")
     try:
         with api_lock:
             for symbol in COINS:
@@ -435,8 +438,10 @@ def market_scanner_loop():
                 if side:
                     record_signal(strat_name) 
                     active_trades[symbol] = True
-                    with api_lock:
-                        curr_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
+                    curr_price = latest_prices.get(symbol, 0.0)
+                    if curr_price == 0.0:
+                        with api_lock:
+                            curr_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
                     
                     notional_size = TOTAL_MARGIN * LEVERAGE
                     total_qty = format_quantity(symbol, notional_size / curr_price)
@@ -456,7 +461,7 @@ def market_scanner_loop():
                         tp1_price = format_price(symbol, exec_price - sl_distance)
                     
                     send_telegram(
-                        f"🚀 *ADVANCED SIGNAL MATCHED [{strat_name}]*\n"
+                        f"🚀 *WEBSOCKET SIGNAL MATCHED [{strat_name}]*\n"
                         f"Pair: `{symbol}` | Side: `{side}` | Entry: `{exec_price}`\n"
                         f"TP1 (1:1): `{tp1_price}` | SL: `{stop_loss_price}`"
                     )
@@ -465,18 +470,34 @@ def market_scanner_loop():
                     t.daemon = True
                     t.start()
                 
-                # API Rate Limit မမိစေရန် Coin တစ်ခုချင်းစီကြားတွင် ၃ စက္ကန့်စီ ခြားထားသည်
-                time.sleep(3)
+                time.sleep(5)
                 
         except Exception as e:
             print(f"Error in scanner loop: {e}")
         
-        time.sleep(15)
+        time.sleep(20)
+
+def handle_socket_message(msg):
+    if msg.get('e') == 'bookTicker':
+        symbol = msg.get('s')
+        best_price = float(msg.get('b', 0))
+        if symbol in COINS and best_price > 0:
+            latest_prices[symbol] = best_price
+
+def start_websocket():
+    twm = ThreadedWebsocketManager(api_key=FUTURES_API_KEY, api_secret=FUTURES_SECRET_KEY, testnet=True)
+    twm.start()
+    
+    for symbol in COINS:
+        twm.start_symbol_book_ticker_socket(callback=handle_socket_message, symbol=symbol)
+    print("📡 Binance Futures WebSocket Stream Connected.")
 
 def run_concurrent_bots():
-    msg = f"🚀 *Optimized Multi-Strategy Bot Running* (Strategies: Volume Profile POC, BB Squeeze Breakout, StochRSI Pullback)"
+    msg = f"🚀 *WebSocket Multi-Strategy Bot Running* (Strategies: Volume Profile POC, BB Squeeze Breakout, StochRSI Pullback)"
     print(msg)
     send_telegram(msg)
+    
+    start_websocket()
     
     scheduler_thread = Thread(target=daily_report_scheduler)
     scheduler_thread.daemon = True
