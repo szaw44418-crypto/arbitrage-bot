@@ -211,7 +211,8 @@ def close_all_positions(reason="Limit Hit"):
 
 def get_cached_klines(symbol):
     current_time = time.time()
-    if symbol in klines_cache and (current_time - last_kline_fetch_time.get(symbol, 0)) < 600:
+    # Cache ကို 1800 စက္ကန့် (မိနစ် 30) အထိ သတ်မှတ်ပေးခြင်းဖြင့် Request Rate Limit ကို ကာကွယ်ပါမည်
+    if symbol in klines_cache and (current_time - last_kline_fetch_time.get(symbol, 0)) < 1800:
         return klines_cache[symbol]
     
     try:
@@ -483,7 +484,7 @@ def market_scanner_loop():
                     client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
                 except:
                     pass
-                time.sleep(0.5)
+                time.sleep(1)
     except:
         pass
 
@@ -494,7 +495,6 @@ def market_scanner_loop():
                 time.sleep(60)
                 continue
 
-            # Check max active trades limit (Max 3 coins)
             active_count = sum(1 for s in COINS if active_trades.get(s, False))
             if active_count >= MAX_ACTIVE_TRADES:
                 time.sleep(10)
@@ -544,12 +544,13 @@ def market_scanner_loop():
                     t.daemon = True
                     t.start()
                 
-                time.sleep(5)
+                # Coin တစ်ခုချင်းစီ စစ်ဆေးအပြီးတွင် Request Weight မပိစေရန် 3 စက္ကန့်စီ ခေတ္တရပ်ပေးပါ
+                time.sleep(3)
                 
         except Exception as e:
             print(f"Error in scanner loop: {e}")
         
-        time.sleep(60)
+        time.sleep(30)
 
 def handle_socket_message(msg):
     if msg.get('e') == 'bookTicker':
