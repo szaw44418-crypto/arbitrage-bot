@@ -208,7 +208,6 @@ def close_all_positions(reason="Limit Hit"):
 
 def get_cached_klines(symbol):
     current_time = time.time()
-    # Cache သက်တမ်းကို 600 စက္ကန့် (၁၀ မိနစ်) အထိ တိုးမြှင့်ထားသည် (Rate Limit ကာကွယ်ရန်)
     if symbol in klines_cache and (current_time - last_kline_fetch_time.get(symbol, 0)) < 600:
         return klines_cache[symbol]
     
@@ -241,24 +240,20 @@ def check_all_strategies_signal(symbol):
         df['close'] = df['close'].astype(float)
         df['volume'] = df['volume'].astype(float)
         
-        # --- [INDICATORS တွက်ချက်ခြင်း] ---
         df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
         df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['EMA10'] = df['close'].ewm(span=10, adjust=False).mean()
         
-        # Bollinger Bands (20, 2)
         df['BB_middle'] = df['close'].rolling(window=20).mean()
         df['BB_std'] = df['close'].rolling(window=20).std()
         df['BB_upper'] = df['BB_middle'] + (2 * df['BB_std'])
         df['BB_lower'] = df['BB_middle'] - (2 * df['BB_std'])
         
-        # Standard RSI (14)
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).ewm(com=13, adjust=False).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(com=13, adjust=False).mean()
         df['RSI'] = 100 - (100 / (1 + (gain / loss)))
         
-        # Stochastic RSI (14, 3, 3)
         stoch_rsi_window = 14
         df['RSI_min'] = df['RSI'].rolling(window=stoch_rsi_window).min()
         df['RSI_max'] = df['RSI'].rolling(window=stoch_rsi_window).max()
@@ -266,13 +261,11 @@ def check_all_strategies_signal(symbol):
         df['StochRSI_K'] = df['StochRSI'].rolling(window=3).mean() * 100
         df['StochRSI_D'] = df['StochRSI_K'].rolling(window=3).mean()
 
-        # MACD (12, 26, 9)
         exp1 = df['close'].ewm(span=12, adjust=False).mean()
         exp2 = df['close'].ewm(span=26, adjust=False).mean()
         df['MACD'] = exp1 - exp2
         df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         
-        # --- [VOLUME PROFILE + POC တွက်ချက်မှု] ---
         vp_df = df.iloc[-100:].copy()
         price_bins = pd.cut(vp_df['close'], bins=20)
         poc_bin = vp_df.groupby(price_bins, observed=False)['volume'].sum().idxmax()
@@ -292,17 +285,11 @@ def check_all_strategies_signal(symbol):
         recent_low = df['low'].iloc[-10:-1].min()
         recent_high = df['high'].iloc[-10:-1].max()
 
-        # =========================================================================
-        # ဗျူဟာ (၁) Volume Profile + POC Rejection
-        # =========================================================================
         if abs(c_low - poc_price) / poc_price < 0.005 and is_green_reversal:
             return "LONG", recent_low, df['EMA10'].iloc[-2], "Volume_Profile_POC"
         if abs(c_high - poc_price) / poc_price < 0.005 and is_red_reversal:
             return "SHORT", recent_high, df['EMA10'].iloc[-2], "Volume_Profile_POC"
 
-        # =========================================================================
-        # ဗျူဟာ (၂) Bollinger Bands Breakout + 200 EMA
-        # =========================================================================
         bb_width = (df['BB_upper'].iloc[-2] - df['BB_lower'].iloc[-2]) / df['BB_middle'].iloc[-2]
         is_squeeze = bb_width < 0.03
         
@@ -312,9 +299,6 @@ def check_all_strategies_signal(symbol):
             if c_close < df['EMA200'].iloc[-2] and c_close < df['BB_lower'].iloc[-2]:
                 return "SHORT", recent_high, df['EMA10'].iloc[-2], "BB_Squeeze_Breakout"
 
-        # =========================================================================
-        # ဗျူဟာ (၃) Stochastic RSI + 50 EMA Micro-Pullback
-        # =========================================================================
         stoch_k = df['StochRSI_K'].iloc[-2]
         stoch_d = df['StochRSI_D'].iloc[-2]
         prev_stoch_k = df['StochRSI_K'].iloc[-3]
@@ -328,9 +312,6 @@ def check_all_strategies_signal(symbol):
             if (prev_stoch_k > prev_stoch_d) and (stoch_k < stoch_d) and stoch_k > 80 and is_red_reversal:
                 return "SHORT", recent_high, df['EMA10'].iloc[-2], "StochRSI_Pullback"
 
-        # =========================================================================
-        # ဗျူဟာ (၄) MACD Crossover Strategy
-        # =========================================================================
         macd_curr = df['MACD'].iloc[-2]
         macd_sig_curr = df['MACD_Signal'].iloc[-2]
         macd_prev = df['MACD'].iloc[-3]
@@ -342,9 +323,6 @@ def check_all_strategies_signal(symbol):
         if (macd_prev >= macd_sig_prev) and (macd_curr < macd_sig_curr) and (c_close < df['EMA50'].iloc[-2]):
             return "SHORT", recent_high, df['EMA10'].iloc[-2], "MACD_Crossover"
 
-        # =========================================================================
-        # ဗျူဟာ (၅) RSI Overbought / Oversold Reversal Strategy
-        # =========================================================================
         rsi_curr = df['RSI'].iloc[-2]
         rsi_prev = df['RSI'].iloc[-3]
 
@@ -354,9 +332,6 @@ def check_all_strategies_signal(symbol):
         if (rsi_prev > 70) and (rsi_curr <= 70) and is_red_reversal:
             return "SHORT", recent_high, df['EMA10'].iloc[-2], "RSI_Reversal"
 
-        # =========================================================================
-        # ဗျူဟာ (၆) 10 EMA Pullback + RSI (30-40 / 60-70) Strategy (လုံးဝ မပြောင်းပါ)
-        # =========================================================================
         ema200_val = df['EMA200'].iloc[-2]
         ema10_val = df['EMA10'].iloc[-2]
 
@@ -499,7 +474,7 @@ def market_scanner_loop():
                     client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
                 except:
                     pass
-                time.sleep(0.5) # Leverage ချိန်းရာတွင် Request Weight မပိစေရန် ခေတ္တရပ်ခြင်း
+                time.sleep(0.5)
     except:
         pass
 
@@ -551,13 +526,11 @@ def market_scanner_loop():
                     t.daemon = True
                     t.start()
                 
-                # Coin တစ်ခုနှင့်တစ်ခု ကြားတွင် API Request Weight လျှော့ချရန် ၅ စက္ကန့်စီ ခေတ္တရပ်ပေးခြင်း
                 time.sleep(5)
                 
         except Exception as e:
-            print(f0"Error in scanner loop: {e}")
+            print(f"Error in scanner loop: {e}")
         
-        # တစ်ပတ်စကင်ဖတ်ပြီးပါက ၁ မိနစ်ခန့် အနားပေးခြင်း
         time.sleep(60)
 
 def handle_socket_message(msg):
