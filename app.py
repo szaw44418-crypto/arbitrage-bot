@@ -31,17 +31,19 @@ client.API_URL = f"{FUTURES_BASE}/fapi"
 
 COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "LINKUSDT"]
 
+# User Configurations
 LEVERAGE = 5
-TOTAL_MARGIN = 20.0  
+TOTAL_MARGIN = 30.0  
 DAILY_PROFIT_LIMIT = 5.0    
 DAILY_LOSS_LIMIT = -2.0     
+MAX_ACTIVE_TRADES = 3      
 
 symbol_info_cache = {}
 active_trades = {}  
 latest_prices = {}
 klines_cache = {}
 last_kline_fetch_time = {}
-last_checked_candle_time = {}  # ဖယောင်းတိုင်အသစ် စစ်ဆေးရန် မှတ်သားမည့် dict
+last_checked_candle_time = {}
 
 DATA_FILE = "advanced_6_strategy_data.json"
 api_lock = Lock()
@@ -229,7 +231,6 @@ def check_all_strategies_signal(symbol):
         klines = get_cached_klines(symbol)
         if not klines or len(klines) < 210: return None, 0, 0, ""
         
-        # ဖယောင်းတိုင်အသစ် ပိတ်/မပိတ် စစ်ဆေးရန် logic
         last_candle_open_time = klines[-2][0]
         if last_checked_candle_time.get(symbol) == last_candle_open_time:
             return None, 0, 0, ""
@@ -291,7 +292,6 @@ def check_all_strategies_signal(symbol):
         recent_low = df['low'].iloc[-10:-1].min()
         recent_high = df['high'].iloc[-10:-1].max()
 
-        # စစ်ဆေးပြီးကြောင်း မှတ်သားခြင်း
         last_checked_candle_time[symbol] = last_candle_open_time
 
         if abs(c_low - poc_price) / poc_price < 0.005 and is_green_reversal:
@@ -494,10 +494,19 @@ def market_scanner_loop():
                 time.sleep(60)
                 continue
 
+            # Check max active trades limit (Max 3 coins)
+            active_count = sum(1 for s in COINS if active_trades.get(s, False))
+            if active_count >= MAX_ACTIVE_TRADES:
+                time.sleep(10)
+                continue
+
             for symbol in COINS:
                 if active_trades.get(symbol, False):
-                    time.sleep(2)
                     continue
+
+                active_count = sum(1 for s in COINS if active_trades.get(s, False))
+                if active_count >= MAX_ACTIVE_TRADES:
+                    break
 
                 side, swing_val, ema10_val, strat_name = check_all_strategies_signal(symbol)
                 if side:
