@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Ultimate Bi-Directional Pullback Bot is running successfully!"
+    return "🤖 Advanced Multi-Strategy Bot with Daily Summary is running successfully!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -38,16 +38,29 @@ DAILY_LOSS_LIMIT = -2.0
 
 symbol_info_cache = {}
 active_trades = {}  
-DATA_FILE = "ultimate_pullback_data.json"
+DATA_FILE = "advanced_multi_strategy_data.json"
 
 def load_data():
+    default_strategies = {
+        "Volume_Profile_POC": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
+        "BB_Squeeze_Breakout": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
+        "StochRSI_Pullback": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0}
+    }
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                if "strategies" not in data:
+                    data["strategies"] = default_strategies
+                return data
         except:
             pass
-    return {"date": str(datetime.date.today()), "daily_pnl": 0.0, "history": []}
+    return {
+        "date": str(datetime.date.today()), 
+        "daily_pnl": 0.0, 
+        "strategies": default_strategies,
+        "history": []
+    }
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
@@ -57,6 +70,7 @@ def check_daily_limit():
     data = load_data()
     today_str = str(datetime.date.today())
     if data.get("date") != today_str:
+        # နေ့သစ်ကူးပြောင်းချိန်တွင် ယခင်နေ့အတွက် Report ပို့ရန် Trigger လုပ်နိုင်သည်
         data["date"] = today_str
         data["daily_pnl"] = 0.0
         save_data(data)
@@ -67,15 +81,31 @@ def check_daily_limit():
         return True, pnl
     return False, pnl
 
-def update_daily_pnl(amount):
+def update_daily_pnl(amount, strat_name=None, is_win=None):
     data = load_data()
     today_str = str(datetime.date.today())
     if data.get("date") != today_str:
         data["date"] = today_str
         data["daily_pnl"] = 0.0
+    
     data["daily_pnl"] = data.get("daily_pnl", 0.0) + amount
+    
+    if strat_name and strat_name in data["strategies"]:
+        if is_win is not None:
+            if is_win:
+                data["strategies"][strat_name]["win"] += 1
+            else:
+                data["strategies"][strat_name]["loss"] += 1
+        data["strategies"][strat_name]["pnl"] += amount
+        
     data["history"].append({"timestamp": str(datetime.datetime.now()), "pnl": amount})
     save_data(data)
+
+def record_signal(strat_name):
+    data = load_data()
+    if strat_name in data["strategies"]:
+        data["strategies"][strat_name]["signals"] += 1
+        save_data(data)
 
 def send_telegram(message):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -85,6 +115,48 @@ def send_telegram(message):
             requests.post(url, json=payload, timeout=5)
         except Exception as e:
             print(f"Telegram Error: {e}")
+
+def send_daily_summary():
+    data = load_data()
+    strategies = data.get("strategies", {})
+    
+    msg = "📊 *DAILY STRATEGY PERFORMANCE REPORT*\n"
+    msg += f"📅 Date: `{data.get('date')}`\n\n"
+    
+    idx = 1
+    for s_name, stats in strategies.items():
+        signals = stats["signals"]
+        wins = stats["win"]
+        losses = stats["loss"]
+        total_closed = wins + losses
+        win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
+        
+        # Net P&L % တွက်ချက်ခြင်း (TOTAL_MARGIN ကို အခြေခံ၍ ရာခိုင်နှုန်းဖော်ပြခြင်း)
+        net_pnl_usdt = stats["pnl"]
+        net_pnl_pct = (net_pnl_usdt / TOTAL_MARGIN) * 100 if TOTAL_MARGIN > 0 else 0.0
+        
+        msg += f"*Strategy #{idx:02d} ({s_name})*\n"
+        msg += f"Signals: `{signals}`\n"
+        msg += f"Win: `{wins}`\n"
+        msg += f"Loss: `{losses}`\n"
+        msg += f"Win Rate: `{round(win_rate, 1)}%`\n"
+        msg += f"Net P&L: `+{round(net_pnl_pct, 1)}%` ({round(net_pnl_usdt, 2)} USDT)\n\n"
+        idx += 1
+        
+    send_telegram(msg)
+
+def daily_report_scheduler():
+    """နေ့စဉ် ည ၁၂ နာရီ (သို့မဟုတ်) ရက်စွဲပြောင်းချိန်တွင် Summary ပို့ပေးရန် background worker"""
+    while True:
+        try:
+            now = datetime.datetime.now()
+            # နေ့စဉ် ည ၁၁:၅၉ တွင် အလိုအလျောက် Report ပို့ရန်
+            if now.hour == 23 and now.minute == 59:
+                send_daily_summary()
+                time.sleep(120) # ထပ်ခါထပ်ခါ မပို့မိစေရန် ၂ မိနစ် အနားပေးခြင်း
+        except Exception as e:
+            print(f"Scheduler error: {e}")
+        time.sleep(30)
 
 def get_symbol_filter(symbol, filter_type):
     if symbol not in symbol_info_cache:
@@ -125,59 +197,94 @@ def close_all_positions(reason="Limit Hit"):
     except Exception as e:
         print(f"Error during emergency close: {e}")
 
-def check_signal(symbol):
+def check_all_strategies_signal(symbol):
     try:
         klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=250)
-        if not klines or len(klines) < 210: return None, 0, 0
+        if not klines or len(klines) < 210: return None, 0, 0, ""
         
         df = pd.DataFrame(klines, columns=['t','open','high','low','close','v','ct','qav','nt','tb','tq','ig'])
         df['open'] = df['open'].astype(float)
         df['high'] = df['high'].astype(float)
         df['low'] = df['low'].astype(float)
         df['close'] = df['close'].astype(float)
+        df['volume'] = df['volume'].astype(float)
         
         df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
+        df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['EMA10'] = df['close'].ewm(span=10, adjust=False).mean()
+        
+        df['BB_middle'] = df['close'].rolling(window=20).mean()
+        df['BB_std'] = df['close'].rolling(window=20).std()
+        df['BB_upper'] = df['BB_middle'] + (2 * df['BB_std'])
+        df['BB_lower'] = df['BB_middle'] - (2 * df['BB_std'])
         
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).ewm(com=13, adjust=False).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(com=13, adjust=False).mean()
         df['RSI'] = 100 - (100 / (1 + (gain / loss)))
         
-        c_close = df['close'].iloc[-2]
+        stoch_rsi_window = 14
+        df['RSI_min'] = df['RSI'].rolling(window=stoch_rsi_window).min()
+        df['RSI_max'] = df['RSI'].rolling(window=stoch_rsi_window).max()
+        df['StochRSI'] = (df['RSI'] - df['RSI_min']) / (df['RSI_max'] - df['RSI_min'] + 1e-10)
+        df['StochRSI_K'] = df['StochRSI'].rolling(window=3).mean() * 100
+        df['StochRSI_D'] = df['StochRSI_K'].rolling(window=3).mean()
+        
+        vp_df = df.iloc[-100:].copy()
+        price_bins = pd.cut(vp_df['close'], bins=20)
+        poc_bin = vp_df.groupby(price_bins, observed=False)['volume'].sum().idxmax()
+        poc_price = (poc_bin.left + poc_bin.right) / 2
+        
+        c_close = df['close'].iloc[-2]  
         c_open = df['open'].iloc[-2]
-        p_close = df['close'].iloc[-3]
+        c_high = df['high'].iloc[-2]
+        c_low = df['low'].iloc[-2]
+        
+        p_close = df['close'].iloc[-3]  
         p_open = df['open'].iloc[-3]
         
-        curr_ema200 = df['EMA200'].iloc[-2]
-        curr_ema10 = df['EMA10'].iloc[-2]
-        curr_rsi = df['RSI'].iloc[-2]
+        is_green_reversal = (p_close < p_open) and (c_close > c_open)
+        is_red_reversal = (p_close > p_open) and (c_close < c_open)
         
-        recent_swing_low = df['low'].iloc[-10:-1].min()
-        recent_swing_high = df['high'].iloc[-10:-1].max()
-        
-        is_long_trend = c_close > curr_ema200
-        is_long_pullback = (df['low'].iloc[-2] <= curr_ema10 or c_close <= curr_ema10)
-        is_long_rsi = (30 <= curr_rsi <= 40)
-        is_long_reversal = (p_close < p_open) and (c_close > c_open)
-        
-        if is_long_trend and is_long_pullback and is_long_rsi and is_long_reversal:
-            return "LONG", recent_swing_low, curr_ema10
-            
-        is_short_trend = c_close < curr_ema200
-        is_short_pullback = (df['high'].iloc[-2] >= curr_ema10 or c_close >= curr_ema10)
-        is_short_rsi = (60 <= curr_rsi <= 70)
-        is_short_reversal = (p_close > p_open) and (c_close < c_open)
-        
-        if is_short_trend and is_short_pullback and is_short_rsi and is_short_reversal:
-            return "SHORT", recent_swing_high, curr_ema10
-            
-        return None, 0, 0
-    except Exception as e:
-        print(f"Signal check error [{symbol}]: {e}")
-        return None, 0, 0
+        recent_low = df['low'].iloc[-10:-1].min()
+        recent_high = df['high'].iloc[-10:-1].max()
 
-def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price, total_qty):
+        # 1. Volume Profile + POC Rejection
+        if abs(c_low - poc_price) / poc_price < 0.005 and is_green_reversal:
+            return "LONG", recent_low, df['EMA10'].iloc[-2], "Volume_Profile_POC"
+        if abs(c_high - poc_price) / poc_price < 0.005 and is_red_reversal:
+            return "SHORT", recent_high, df['EMA10'].iloc[-2], "Volume_Profile_POC"
+
+        # 2. Bollinger Bands Breakout + 200 EMA
+        bb_width = (df['BB_upper'].iloc[-2] - df['BB_lower'].iloc[-2]) / df['BB_middle'].iloc[-2]
+        is_squeeze = bb_width < 0.03
+        
+        if is_squeeze:
+            if c_close > df['EMA200'].iloc[-2] and c_close > df['BB_upper'].iloc[-2]:
+                return "LONG", recent_low, df['EMA10'].iloc[-2], "BB_Squeeze_Breakout"
+            if c_close < df['EMA200'].iloc[-2] and c_close < df['BB_lower'].iloc[-2]:
+                return "SHORT", recent_high, df['EMA10'].iloc[-2], "BB_Squeeze_Breakout"
+
+        # 3. Stochastic RSI + 50 EMA Micro-Pullback
+        stoch_k = df['StochRSI_K'].iloc[-2]
+        stoch_d = df['StochRSI_D'].iloc[-2]
+        prev_stoch_k = df['StochRSI_K'].iloc[-3]
+        prev_stoch_d = df['StochRSI_D'].iloc[-3]
+        
+        if c_close > df['EMA50'].iloc[-2] and (c_low <= df['EMA50'].iloc[-2] or c_close <= df['EMA10'].iloc[-2]):
+            if (prev_stoch_k < prev_stoch_d) and (stoch_k > stoch_d) and stoch_k < 20 and is_green_reversal:
+                return "LONG", recent_low, df['EMA10'].iloc[-2], "StochRSI_Pullback"
+                
+        if c_close < df['EMA50'].iloc[-2] and (c_high >= df['EMA50'].iloc[-2] or c_close >= df['EMA10'].iloc[-2]):
+            if (prev_stoch_k > prev_stoch_d) and (stoch_k < stoch_d) and stoch_k > 80 and is_red_reversal:
+                return "SHORT", recent_high, df['EMA10'].iloc[-2], "StochRSI_Pullback"
+
+        return None, 0, 0, ""
+    except Exception as e:
+        print(f"Strategy Error for [{symbol}]: {e}")
+        return None, 0, 0, ""
+
+def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price, total_qty, strat_name):
     tp_side = 'SELL' if side == 'LONG' else 'BUY'
     half_qty = format_quantity(symbol, total_qty / 2)
     tp1_hit = False
@@ -193,7 +300,7 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
         active_trades[symbol] = False
         return
 
-    print(f"📡 Monitoring {symbol} {side} position...")
+    print(f"📡 Monitoring {symbol} {side} [{strat_name}] position...")
     while True:
         try:
             is_stopped, current_pnl = check_daily_limit()
@@ -204,13 +311,12 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
             ticker = client.futures_symbol_ticker(symbol=symbol)
             curr_price = float(ticker['price'])
             
-            # --- LONG POSITION MONITORING ---
             if side == "LONG":
                 if curr_price <= stop_loss_price:
                     client.futures_cancel_all_open_orders(symbol=symbol)
                     loss_amount = (stop_loss_price - exec_price) * total_qty
-                    update_daily_pnl(loss_amount)
-                    send_telegram(f"🛑 *{symbol} LONG SL Hit!* Price: `{curr_price}` | Realized Loss: `{round(loss_amount, 2)} USDT`")
+                    update_daily_pnl(loss_amount, strat_name, is_win=False)
+                    send_telegram(f"🛑 *{symbol} LONG SL Hit!* [{strat_name}] Price: `{curr_price}` | Loss: `{round(loss_amount, 2)} USDT`")
                     break
                 
                 if not tp1_hit:
@@ -220,7 +326,7 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                         stop_loss_price = exec_price  
                         profit_tp1 = (tp1_price - exec_price) * half_qty
                         update_daily_pnl(profit_tp1)
-                        send_telegram(f"🎯 *{symbol} LONG TP1 Hit!* Half closed at `{tp1_price}`. SL moved to Break-even `{exec_price}`")
+                        send_telegram(f"🎯 *{symbol} LONG TP1 Hit!* [{strat_name}] SL moved to Break-even `{exec_price}`")
                 else:
                     klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=5)
                     last_candle_close = float(klines[-2][4])
@@ -230,17 +336,16 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                     if last_candle_close < ema10_curr or curr_price <= exec_price:
                         client.futures_create_order(symbol=symbol, side=tp_side, type='MARKET', quantity=half_qty)
                         profit_tp2 = (curr_price - exec_price) * half_qty
-                        update_daily_pnl(profit_tp2)
-                        send_telegram(f"🏁 *{symbol} LONG TP2 / Exit Hit!* Remaining half closed at `{curr_price}`.")
+                        update_daily_pnl(profit_tp2, strat_name, is_win=True)
+                        send_telegram(f"🏁 *{symbol} LONG Exit Hit!* [{strat_name}] Closed remaining half.")
                         break
 
-            # --- SHORT POSITION MONITORING ---
             elif side == "SHORT":
                 if curr_price >= stop_loss_price:
                     client.futures_cancel_all_open_orders(symbol=symbol)
                     loss_amount = (stop_loss_price - exec_price) * total_qty
-                    update_daily_pnl(loss_amount)
-                    send_telegram(f"🛑 *{symbol} SHORT SL Hit!* Price: `{curr_price}` | Realized Loss: `{round(loss_amount, 2)} USDT`")
+                    update_daily_pnl(loss_amount, strat_name, is_win=False)
+                    send_telegram(f"🛑 *{symbol} SHORT SL Hit!* [{strat_name}] Price: `{curr_price}` | Loss: `{round(loss_amount, 2)} USDT`")
                     break
                 
                 if not tp1_hit:
@@ -250,7 +355,7 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                         stop_loss_price = exec_price  
                         profit_tp1 = (exec_price - tp1_price) * half_qty
                         update_daily_pnl(profit_tp1)
-                        send_telegram(f"🎯 *{symbol} SHORT TP1 Hit!* Half closed at `{tp1_price}`. SL moved to Break-even `{exec_price}`")
+                        send_telegram(f"🎯 *{symbol} SHORT TP1 Hit!* [{strat_name}] SL moved to Break-even `{exec_price}`")
                 else:
                     klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=5)
                     last_candle_close = float(klines[-2][4])
@@ -260,8 +365,8 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                     if last_candle_close > ema10_curr or curr_price >= exec_price:
                         client.futures_create_order(symbol=symbol, side=tp_side, type='MARKET', quantity=half_qty)
                         profit_tp2 = (exec_price - curr_price) * half_qty
-                        update_daily_pnl(profit_tp2)
-                        send_telegram(f"🏁 *{symbol} SHORT TP2 / Exit Hit!* Remaining half closed at `{curr_price}`.")
+                        update_daily_pnl(profit_tp2, strat_name, is_win=True)
+                        send_telegram(f"🏁 *{symbol} SHORT Exit Hit!* [{strat_name}] Closed remaining half.")
                         break
 
             time.sleep(5)
@@ -282,7 +387,7 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
     active_trades[symbol] = False
 
 def coin_trade_worker(symbol):
-    print(f"🔄 Bot Worker active for {symbol}...")
+    print(f"🔄 Advanced Worker active for {symbol}...")
     try:
         client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
     except:
@@ -299,8 +404,9 @@ def coin_trade_worker(symbol):
                 time.sleep(30)
                 continue
 
-            side, swing_val, ema10_val = check_signal(symbol)
+            side, swing_val, ema10_val, strat_name = check_all_strategies_signal(symbol)
             if side:
+                record_signal(strat_name) # Strategy အလိုက် Signal အရေအတွက် မှတ်တမ်းတင်ခြင်း
                 active_trades[symbol] = True
                 curr_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
                 
@@ -321,23 +427,28 @@ def coin_trade_worker(symbol):
                     tp1_price = format_price(symbol, exec_price - sl_distance)
                 
                 send_telegram(
-                    f"🚀 *{side} PULLBACK ENTRY MATCHED*\n"
-                    f"Pair: `{symbol}` | Entry: `{exec_price}`\n"
+                    f"🚀 *ADVANCED SIGNAL MATCHED [{strat_name}]*\n"
+                    f"Pair: `{symbol}` | Side: `{side}` | Entry: `{exec_price}`\n"
                     f"TP1 (1:1): `{tp1_price}` | SL: `{stop_loss_price}`"
                 )
                 
-                monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price, total_qty)
+                monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price, total_qty, strat_name)
                 
         except Exception as e:
             print(f"Error in worker {symbol}: {e}")
             active_trades[symbol] = False
         
-        time.sleep(30)
+        time.sleep(900)
 
 def run_concurrent_bots():
-    msg = f"🚀 *Ultimate Pullback Bot Running* ($100 Capital, 5x, Target: +$5, Max Loss: -$2)"
+    msg = f"🚀 *Advanced Multi-Strategy Bot Running* (Strategies: Volume Profile POC, BB Squeeze Breakout, StochRSI Pullback | Interval: 15m checks)"
     print(msg)
     send_telegram(msg)
+    
+    # နေ့စဉ် Summary Report Scheduler Thread ကို စတင်ခြင်း
+    scheduler_thread = Thread(target=daily_report_scheduler)
+    scheduler_thread.daemon = True
+    scheduler_thread.start()
     
     threads = []
     for symbol in COINS:
@@ -345,7 +456,7 @@ def run_concurrent_bots():
         t.daemon = True
         t.start()
         threads.append(t)
-        time.sleep(1)
+        time.sleep(3)
         
     for t in threads:
         t.join()
