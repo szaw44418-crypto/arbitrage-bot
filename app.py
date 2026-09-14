@@ -70,7 +70,6 @@ def check_daily_limit():
     data = load_data()
     today_str = str(datetime.date.today())
     if data.get("date") != today_str:
-        # နေ့သစ်ကူးပြောင်းချိန်တွင် ယခင်နေ့အတွက် Report ပို့ရန် Trigger လုပ်နိုင်သည်
         data["date"] = today_str
         data["daily_pnl"] = 0.0
         save_data(data)
@@ -131,29 +130,27 @@ def send_daily_summary():
         total_closed = wins + losses
         win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
         
-        # Net P&L % တွက်ချက်ခြင်း (TOTAL_MARGIN ကို အခြေခံ၍ ရာခိုင်နှုန်းဖော်ပြခြင်း)
         net_pnl_usdt = stats["pnl"]
         net_pnl_pct = (net_pnl_usdt / TOTAL_MARGIN) * 100 if TOTAL_MARGIN > 0 else 0.0
         
+        sign_char = "+" if net_pnl_pct >= 0 else ""
         msg += f"*Strategy #{idx:02d} ({s_name})*\n"
         msg += f"Signals: `{signals}`\n"
         msg += f"Win: `{wins}`\n"
         msg += f"Loss: `{losses}`\n"
         msg += f"Win Rate: `{round(win_rate, 1)}%`\n"
-        msg += f"Net P&L: `+{round(net_pnl_pct, 1)}%` ({round(net_pnl_usdt, 2)} USDT)\n\n"
+        msg += f"Net P&L: `{sign_char}{round(net_pnl_pct, 1)}%` ({round(net_pnl_usdt, 2)} USDT)\n\n"
         idx += 1
         
     send_telegram(msg)
 
 def daily_report_scheduler():
-    """နေ့စဉ် ည ၁၂ နာရီ (သို့မဟုတ်) ရက်စွဲပြောင်းချိန်တွင် Summary ပို့ပေးရန် background worker"""
     while True:
         try:
             now = datetime.datetime.now()
-            # နေ့စဉ် ည ၁၁:၅၉ တွင် အလိုအလျောက် Report ပို့ရန်
             if now.hour == 23 and now.minute == 59:
                 send_daily_summary()
-                time.sleep(120) # ထပ်ခါထပ်ခါ မပို့မိစေရန် ၂ မိနစ် အနားပေးခြင်း
+                time.sleep(120)
         except Exception as e:
             print(f"Scheduler error: {e}")
         time.sleep(30)
@@ -202,7 +199,13 @@ def check_all_strategies_signal(symbol):
         klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=250)
         if not klines or len(klines) < 210: return None, 0, 0, ""
         
-        df = pd.DataFrame(klines, columns=['t','open','high','low','close','v','ct','qav','nt','tb','tq','ig'])
+        # Binance klines standard columns mapping to prevent KeyError
+        df = pd.DataFrame(klines, columns=[
+            'open_time', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'quote_asset_volume', 'number_of_trades',
+            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+        ])
+        
         df['open'] = df['open'].astype(float)
         df['high'] = df['high'].astype(float)
         df['low'] = df['low'].astype(float)
@@ -330,7 +333,11 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                 else:
                     klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=5)
                     last_candle_close = float(klines[-2][4])
-                    df_check = pd.DataFrame(klines, columns=['t','open','high','low','close','v','ct','qav','nt','tb','tq','ig'])
+                    df_check = pd.DataFrame(klines, columns=[
+                        'open_time', 'open', 'high', 'low', 'close', 'volume',
+                        'close_time', 'quote_asset_volume', 'number_of_trades',
+                        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+                    ])
                     ema10_curr = df_check['close'].astype(float).ewm(span=10, adjust=False).mean().iloc[-2]
                     
                     if last_candle_close < ema10_curr or curr_price <= exec_price:
@@ -359,7 +366,11 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                 else:
                     klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=5)
                     last_candle_close = float(klines[-2][4])
-                    df_check = pd.DataFrame(klines, columns=['t','open','high','low','close','v','ct','qav','nt','tb','tq','ig'])
+                    df_check = pd.DataFrame(klines, columns=[
+                        'open_time', 'open', 'high', 'low', 'close', 'volume',
+                        'close_time', 'quote_asset_volume', 'number_of_trades',
+                        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+                    ])
                     ema10_curr = df_check['close'].astype(float).ewm(span=10, adjust=False).mean().iloc[-2]
                     
                     if last_candle_close > ema10_curr or curr_price >= exec_price:
@@ -393,6 +404,9 @@ def coin_trade_worker(symbol):
     except:
         pass
 
+    # စတင်ချိန်တွင် API Rate Limit မမိစေရန် Coin တစ်ခုချင်းစီ အနည်းငယ်စီ စောင့်ပေးခြင်း
+    time.sleep(5)
+
     while True:
         try:
             is_stopped, current_pnl = check_daily_limit()
@@ -406,7 +420,7 @@ def coin_trade_worker(symbol):
 
             side, swing_val, ema10_val, strat_name = check_all_strategies_signal(symbol)
             if side:
-                record_signal(strat_name) # Strategy အလိုက် Signal အရေအတွက် မှတ်တမ်းတင်ခြင်း
+                record_signal(strat_name) 
                 active_trades[symbol] = True
                 curr_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
                 
@@ -438,14 +452,14 @@ def coin_trade_worker(symbol):
             print(f"Error in worker {symbol}: {e}")
             active_trades[symbol] = False
         
-        time.sleep(900)
+        # Rate Limit (-1003) ထပ်မံမဖြစ်ပွားစေရန် Coin တစ်ခုချင်းစီကို ၁ မိနစ် (၆၀ စက္ကန့်) မှ အနည်းဆုံး အနားပေးခြင်း
+        time.sleep(60)
 
 def run_concurrent_bots():
-    msg = f"🚀 *Advanced Multi-Strategy Bot Running* (Strategies: Volume Profile POC, BB Squeeze Breakout, StochRSI Pullback | Interval: 15m checks)"
+    msg = f"🚀 *Advanced Multi-Strategy Bot Running* (Strategies: Volume Profile POC, BB Squeeze Breakout, StochRSI Pullback)"
     print(msg)
     send_telegram(msg)
     
-    # နေ့စဉ် Summary Report Scheduler Thread ကို စတင်ခြင်း
     scheduler_thread = Thread(target=daily_report_scheduler)
     scheduler_thread.daemon = True
     scheduler_thread.start()
@@ -456,7 +470,8 @@ def run_concurrent_bots():
         t.daemon = True
         t.start()
         threads.append(t)
-        time.sleep(3)
+        # Request တွေ တစ်ပြိုင်နက် မဝင်သွားစေရန် ကြားထဲတွင် ၅ စက္ကန့်စီ ခြားပေးပါ
+        time.sleep(5)
         
     for t in threads:
         t.join()
