@@ -13,22 +13,23 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Scalping Bot (30 Combinations with New Telegram Credentials & Daily Performance Report) is running!"
+    return "🤖 Reverse Futures Short Scalping Bot (TP: -1%, SL: +2%) is running!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-SPOT_BASE = "https://testnet.binance.vision"
-SPOT_API_KEY = os.environ.get("SPOT_API_KEY", "EGMDZzNYcF8aHKsKGxWurbK63sLFdKA42cDEZC3zd8IPkyD3JDEH7btCt4D34aWV")
-SPOT_SECRET_KEY = os.environ.get("SPOT_SECRET_KEY", "YfGOumNKz4MMbZ9MBy7aMB3R6CWxSjVljJvreup8k3BGL5pi1pqc73ieCpOghM8R")
+# Binance Futures Testnet Credentials & Base URL
+FUTURES_BASE = "https://testnet.binancefuture.com"
+FUTURES_API_KEY = os.environ.get("FUTURES_API_KEY", "TGSwnTW3ukJ7z8fXKeZd4Iz6MBttW6bRA2ODX5rwXC90YWsv5srgcwcL7Bl8XQeA").strip()
+FUTURES_SECRET_KEY = os.environ.get("FUTURES_SECRET_KEY", "b64gEodONh8DMFPsX7Kaj1QRhGdgRM8iCYy8gVPVAO8VNAzWL88DmvZhrVE330Ed").strip()
 
-# 📱 Telegram Credentials အသစ်များဖြင့် အစားထိုးထားပါသည်
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q7tQP_v3kNVAyslSYD3FsAWz60").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
 
-client = Client(SPOT_API_KEY, SPOT_SECRET_KEY, testnet=True)
-client.API_URL = f"{SPOT_BASE}/api"
+# Futures client initialization
+client = Client(FUTURES_API_KEY, FUTURES_SECRET_KEY, testnet=True)
+client.API_URL = f"{FUTURES_BASE}/fapi"
 
 COINS = [
     "BTCUSDT", "ETHUSDT", "XRPUSDT", "DOGEUSDT", 
@@ -37,8 +38,8 @@ COINS = [
 ]
 
 CAPITAL_PER_ORDER = 10.0  
-PROFIT_TARGET_PCT = 0.02   # TP: +2.0%
-STOP_LOSS_PCT = 0.01       # SL: -1.0%
+PROFIT_TARGET_PCT = 0.01   # Futures Short TP: -1.0%
+STOP_LOSS_PCT = 0.02       # Futures Short SL: +2.0%
 
 symbol_info_cache = {}
 active_trades = {}  
@@ -69,8 +70,9 @@ def send_telegram(message):
 def get_symbol_filter(symbol, filter_type):
     if symbol not in symbol_info_cache:
         try:
-            info = client.get_symbol_info(symbol)
-            if info: symbol_info_cache[symbol] = info
+            info = client.futures_exchange_info()
+            for s in info['symbols']:
+                symbol_info_cache[s['symbol']] = s
         except Exception: return None
     info = symbol_info_cache.get(symbol)
     if info:
@@ -86,13 +88,13 @@ def format_price(symbol, price):
 
 def format_quantity(symbol, qty):
     lf = get_symbol_filter(symbol, 'LOT_SIZE')
-    if not lf: return round(qty, 5)
+    if not lf: return round(qty, 3)
     step = float(lf['stepSize'])
     return round(round(qty / step) * step, int(round(-math.log10(step))))
 
 def check_market_conditions(symbol):
     try:
-        klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=60)
+        klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=60)
         if not klines or len(klines) < 50: return False, None, None
         
         df = pd.DataFrame(klines, columns=['t','open','high','low','close','v','ct','qav','nt','tb','tq','ig'])
@@ -210,7 +212,7 @@ def check_market_conditions(symbol):
         }
 
         for cid, matched in c_sets.items():
-            if matched:
+            if not matched:  # Reverse logic for Short
                 return True, cid, names[cid]
 
         return False, None, None
@@ -220,22 +222,23 @@ def check_market_conditions(symbol):
         return False, None, None
 
 def coin_trade_worker(symbol):
-    print(f"🔄 Worker started for {symbol}...")
+    print(f"🔄 Futures Worker started for {symbol}...")
     while True:
         try:
             if active_trades.get(symbol, False):
                 time.sleep(30)
                 continue
 
-            should_buy, combo_id, combo_name = check_market_conditions(symbol)
+            should_sell, combo_id, combo_name = check_market_conditions(symbol)
             
-            if should_buy:
+            if should_sell:
                 active_trades[symbol] = True
-                curr_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
-                buy_qty = format_quantity(symbol, CAPITAL_PER_ORDER / curr_price)
+                curr_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
+                sell_qty = format_quantity(symbol, CAPITAL_PER_ORDER / curr_price)
                 
-                order = client.create_order(symbol=symbol, side='BUY', type='MARKET', quantity=buy_qty, recvWindow=60000)
-                exec_price = float(order.get('fills', [{}])[0].get('price', curr_price))
+                # Futures Short Order (SELL)
+                order = client.futures_create_order(symbol=symbol, side='SELL', type='MARKET', quantity=sell_qty, recvWindow=60000)
+                exec_price = float(order.get('avgPrice', curr_price))
                 total_coins = float(order['executedQty'])
                 
                 data = load_data()
@@ -246,36 +249,37 @@ def coin_trade_worker(symbol):
                 time_str = datetime.datetime.now().strftime('%H:%M')
                 
                 send_telegram(
-                    f"{combo_id}\n"
+                    f"🔻 *FUTURES SHORT SIGNAL* ({combo_id})\n"
                     f"`{symbol}`\n"
                     f"Combination: {combo_name}\n"
                     f"Entry: `{exec_price}`\n"
                     f"Time: `{time_str}`"
                 )
                 
-                target_sell = format_price(symbol, exec_price * (1 + PROFIT_TARGET_PCT))
-                stop_loss_price = format_price(symbol, exec_price * (1 - STOP_LOSS_PCT))
+                target_buy = format_price(symbol, exec_price * (1 - PROFIT_TARGET_PCT))
+                stop_loss_price = format_price(symbol, exec_price * (1 + STOP_LOSS_PCT))
                 
-                sell_order = client.create_order(
-                    symbol=symbol, side='SELL', type='LIMIT', timeInForce='GTC',
-                    quantity=format_quantity(symbol, total_coins), price=str(target_sell), recvWindow=60000
+                # Futures Limit Buy order to close short position (TP)
+                buy_order = client.futures_create_order(
+                    symbol=symbol, side='BUY', type='LIMIT', timeInForce='GTC',
+                    quantity=format_quantity(symbol, total_coins), price=str(target_buy), recvWindow=60000
                 )
                 
-                order_id = sell_order['orderId']
+                order_id = buy_order['orderId']
                 trade_result = None
                 pnl_pct = 0.0
                 
                 while True:
-                    chk = client.get_order(symbol=symbol, orderId=order_id)
+                    chk = client.futures_get_order(symbol=symbol, orderId=order_id)
                     if chk['status'] == 'FILLED':
                         trade_result = "WIN"
                         pnl_pct = PROFIT_TARGET_PCT * 100
                         break
                     
-                    live_p = float(client.get_symbol_ticker(symbol=symbol)['price'])
-                    if live_p <= stop_loss_price:
-                        client.cancel_order(symbol=symbol, orderId=order_id)
-                        client.create_order(symbol=symbol, side='SELL', type='MARKET', quantity=format_quantity(symbol, total_coins), recvWindow=60000)
+                    live_p = float(client.futures_symbol_ticker(symbol=symbol)['price'])
+                    if live_p >= stop_loss_price:
+                        client.futures_cancel_order(symbol=symbol, orderId=order_id)
+                        client.futures_create_order(symbol=symbol, side='BUY', type='MARKET', quantity=format_quantity(symbol, total_coins), recvWindow=60000)
                         trade_result = "LOSS"
                         pnl_pct = -STOP_LOSS_PCT * 100
                         break
@@ -292,10 +296,10 @@ def coin_trade_worker(symbol):
                 save_data(lock_data)
                 
                 send_telegram(
-                    f"Signal ID: `{sig_id}`\n"
+                    f"Signal ID: `{sig_id}` (FUTURES SHORT)\n"
                     f"Pair: `{symbol}`\n"
                     f"Combination: `{combo_id}`\n"
-                    f"TP: `+{PROFIT_TARGET_PCT*100}%` | SL: `-{STOP_LOSS_PCT*100}%`\n\n"
+                    f"TP: `-{PROFIT_TARGET_PCT*100}%` | SL: `+{STOP_LOSS_PCT*100}%`\n\n"
                     f"Result: `{'WIN 🎉' if trade_result == 'WIN' else 'LOSS 🚨'}`\n"
                     f"P&L: `{'+' if pnl_pct > 0 else ''}{pnl_pct:.1f}%`"
                 )
@@ -320,7 +324,7 @@ def daily_report_worker():
         data = load_data()
         history = data.get("history", [])
         
-        report_msg = "📊 *DAILY COMBINATION PERFORMANCE REPORT* 📊\n━━━━━━━━━━━━━━━━━━━\n"
+        report_msg = "📊 *FUTURES SHORT DAILY PERFORMANCE REPORT* 📊\n━━━━━━━━━━━━━━━━━━━\n"
         
         for i in range(1, 31):
             cid = f"#{i:02d}"
@@ -348,7 +352,7 @@ def daily_report_worker():
         time.sleep(60)
 
 def run_concurrent_bots():
-    msg = f"🚀 *Scalping Bot & 30 Combinations Tracker Started* (TP: +2%, SL: -1%)"
+    msg = f"🚀 *Binance Futures Reverse Short Bot Started* (TP: -1%, SL: +2%)"
     print(msg)
     send_telegram(msg)
     
