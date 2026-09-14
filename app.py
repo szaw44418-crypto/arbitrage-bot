@@ -208,7 +208,8 @@ def close_all_positions(reason="Limit Hit"):
 
 def get_cached_klines(symbol):
     current_time = time.time()
-    if symbol in klines_cache and (current_time - last_kline_fetch_time.get(symbol, 0)) < 300:
+    # Cache သက်တမ်းကို 600 စက္ကန့် (၁၀ မိနစ်) အထိ တိုးမြှင့်ထားသည် (Rate Limit ကာကွယ်ရန်)
+    if symbol in klines_cache and (current_time - last_kline_fetch_time.get(symbol, 0)) < 600:
         return klines_cache[symbol]
     
     try:
@@ -224,15 +225,6 @@ def get_cached_klines(symbol):
     return klines_cache.get(symbol, None)
 
 def check_all_strategies_signal(symbol):
-    """
-    ဗျူဟာ ၆ မျိုးစလုံး၏ LONG / SHORT အချက်ပြမှုများကို အသေးစိတ် တွက်ချက်စစ်ဆေးခြင်း
-    ၁။ Volume Profile + POC Rejection
-    ၂။ Bollinger Bands Breakout + 200 EMA
-    ၃။ Stochastic RSI + 50 EMA Micro-Pullback
-    ၄။ MACD Crossover Strategy
-    ၅။ RSI Overbought / Oversold Reversal Strategy
-    ၆။ 10 EMA Pullback + RSI (30-40) Strategy
-    """
     try:
         klines = get_cached_klines(symbol)
         if not klines or len(klines) < 210: return None, 0, 0, ""
@@ -363,16 +355,14 @@ def check_all_strategies_signal(symbol):
             return "SHORT", recent_high, df['EMA10'].iloc[-2], "RSI_Reversal"
 
         # =========================================================================
-        # ဗျူဟာ (၆) 10 EMA Pullback + RSI (30-40 / 60-70) Strategy
+        # ဗျူဟာ (၆) 10 EMA Pullback + RSI (30-40 / 60-70) Strategy (လုံးဝ မပြောင်းပါ)
         # =========================================================================
         ema200_val = df['EMA200'].iloc[-2]
         ema10_val = df['EMA10'].iloc[-2]
 
-        # LONG Rule: 200 EMA အပေါ်, ဈေးက 10 EMA ကိုထိ/အောက်ဆင်း, RSI (30-40), Green Reversal Candle
         if (c_close > ema200_val) and (c_low <= ema10_val or c_close <= ema10_val) and (30 <= rsi_curr < 40) and is_green_reversal:
             return "LONG", recent_low, ema10_val, "EMA10_RSI_Pullback"
 
-        # SHORT Rule: 200 EMA အောက်, ဈေးက 10 EMA ကိုထိ/အပေါ်တက်, RSI (60-70), Red Reversal Candle
         if (c_close < ema200_val) and (c_high >= ema10_val or c_close >= ema10_val) and (60 < rsi_curr <= 70) and is_red_reversal:
             return "SHORT", recent_high, ema10_val, "EMA10_RSI_Pullback"
 
@@ -509,6 +499,7 @@ def market_scanner_loop():
                     client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
                 except:
                     pass
+                time.sleep(0.5) # Leverage ချိန်းရာတွင် Request Weight မပိစေရန် ခေတ္တရပ်ခြင်း
     except:
         pass
 
@@ -521,6 +512,7 @@ def market_scanner_loop():
 
             for symbol in COINS:
                 if active_trades.get(symbol, False):
+                    time.sleep(2)
                     continue
 
                 side, swing_val, ema10_val, strat_name = check_all_strategies_signal(symbol)
@@ -559,12 +551,14 @@ def market_scanner_loop():
                     t.daemon = True
                     t.start()
                 
-                time.sleep(10)
+                # Coin တစ်ခုနှင့်တစ်ခု ကြားတွင် API Request Weight လျှော့ချရန် ၅ စက္ကန့်စီ ခေတ္တရပ်ပေးခြင်း
+                time.sleep(5)
                 
         except Exception as e:
-            print(f"Error in scanner loop: {e}")
+            print(f0"Error in scanner loop: {e}")
         
-        time.sleep(30)
+        # တစ်ပတ်စကင်ဖတ်ပြီးပါက ၁ မိနစ်ခန့် အနားပေးခြင်း
+        time.sleep(60)
 
 def handle_socket_message(msg):
     if msg.get('e') == 'bookTicker':
