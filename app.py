@@ -41,6 +41,7 @@ active_trades = {}
 latest_prices = {}
 klines_cache = {}
 last_kline_fetch_time = {}
+last_checked_candle_time = {}  # ဖယောင်းတိုင်အသစ် စစ်ဆေးရန် မှတ်သားမည့် dict
 
 DATA_FILE = "advanced_6_strategy_data.json"
 api_lock = Lock()
@@ -228,6 +229,11 @@ def check_all_strategies_signal(symbol):
         klines = get_cached_klines(symbol)
         if not klines or len(klines) < 210: return None, 0, 0, ""
         
+        # ဖယောင်းတိုင်အသစ် ပိတ်/မပိတ် စစ်ဆေးရန် logic
+        last_candle_open_time = klines[-2][0]
+        if last_checked_candle_time.get(symbol) == last_candle_open_time:
+            return None, 0, 0, ""
+        
         df = pd.DataFrame(klines, columns=[
             'open_time', 'open', 'high', 'low', 'close', 'volume',
             'close_time', 'quote_asset_volume', 'number_of_trades',
@@ -284,6 +290,9 @@ def check_all_strategies_signal(symbol):
         
         recent_low = df['low'].iloc[-10:-1].min()
         recent_high = df['high'].iloc[-10:-1].max()
+
+        # စစ်ဆေးပြီးကြောင်း မှတ်သားခြင်း
+        last_checked_candle_time[symbol] = last_candle_open_time
 
         if abs(c_low - poc_price) / poc_price < 0.005 and is_green_reversal:
             return "LONG", recent_low, df['EMA10'].iloc[-2], "Volume_Profile_POC"
