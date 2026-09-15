@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Rate-Limit Free 6-Strategy Multi-Bot is running successfully!"
+    return "🤖 Rate-Limit Free 5-Strategy Multi-Bot is running successfully!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -45,17 +45,16 @@ klines_cache = {}
 last_kline_fetch_time = {}
 last_checked_candle_time = {}
 
-DATA_FILE = "advanced_6_strategy_data.json"
+DATA_FILE = "advanced_5_strategy_data.json"
 api_lock = Lock()
 
 def load_data():
     default_strategies = {
-        "Volume_Profile_POC": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
-        "BB_Squeeze_Breakout": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
-        "StochRSI_Pullback": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
-        "MACD_Crossover": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
-        "RSI_Reversal": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
-        "EMA10_RSI_Pullback": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0}
+        "50EMA_RSI_Pullback": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
+        "20EMA_StochRSI": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
+        "BB_Middle_Pullback": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
+        "MACD_Zero_EMA10": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
+        "SuperTrend_EMA10": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0}
     }
     if os.path.exists(DATA_FILE):
         try:
@@ -134,7 +133,7 @@ def send_daily_summary():
     data = load_data()
     strategies = data.get("strategies", {})
     
-    msg = "📊 *DAILY 6-STRATEGY PERFORMANCE REPORT*\n"
+    msg = "📊 *DAILY 5-STRATEGY PERFORMANCE REPORT*\n"
     msg += f"📅 Date: `{data.get('date')}`\n\n"
     
     idx = 1
@@ -211,7 +210,6 @@ def close_all_positions(reason="Limit Hit"):
 
 def get_cached_klines(symbol):
     current_time = time.time()
-    # Cache ကို 1800 စက္ကန့် (မိနစ် 30) အထိ သတ်မှတ်ပေးခြင်းဖြင့် Request Rate Limit ကို ကာကွယ်ပါမည်
     if symbol in klines_cache and (current_time - last_kline_fetch_time.get(symbol, 0)) < 1800:
         return klines_cache[symbol]
     
@@ -227,6 +225,94 @@ def get_cached_klines(symbol):
     
     return klines_cache.get(symbol, None)
 
+# =========================================================================
+# STRATEGY 1: 50 EMA Dynamic Pullback + RSI
+# =========================================================================
+def strategy_50ema_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
+    rsi_curr = df['RSI'].iloc[-2]
+    ema200_val = df['EMA200'].iloc[-2]
+    ema50_val = df['EMA50'].iloc[-2]
+
+    if (c_close > ema200_val) and (c_low <= ema50_val or c_close <= ema50_val) and (35 <= rsi_curr <= 45) and is_green_reversal:
+        return "LONG", recent_low, df['EMA10'].iloc[-2], "50EMA_RSI_Pullback"
+
+    if (c_close < ema200_val) and (c_high >= ema50_val or c_close >= ema50_val) and (55 <= rsi_curr <= 65) and is_red_reversal:
+        return "SHORT", recent_high, df['EMA10'].iloc[-2], "50EMA_RSI_Pullback"
+        
+    return None, 0, 0, ""
+
+# =========================================================================
+# STRATEGY 2: 20 EMA + Stochastic RSI Multi-Filter
+# =========================================================================
+def strategy_20ema_stoch_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
+    stoch_k = df['StochRSI_K'].iloc[-2]
+    stoch_d = df['StochRSI_D'].iloc[-2]
+    prev_stoch_k = df['StochRSI_K'].iloc[-3]
+    prev_stoch_d = df['StochRSI_D'].iloc[-3]
+    ema200_val = df['EMA200'].iloc[-2]
+    ema20_val = df['EMA20'].iloc[-2]
+
+    if (c_close > ema200_val) and (c_low <= ema20_val or c_close <= ema20_val):
+        if (prev_stoch_k < prev_stoch_d) and (stoch_k > stoch_d) and stoch_k < 20 and is_green_reversal:
+            return "LONG", recent_low, df['EMA10'].iloc[-2], "20EMA_StochRSI"
+            
+    if (c_close < ema200_val) and (c_high >= ema20_val or c_close >= ema20_val):
+        if (prev_stoch_k > prev_stoch_d) and (stoch_k < stoch_d) and stoch_k > 80 and is_red_reversal:
+            return "SHORT", recent_high, df['EMA10'].iloc[-2], "20EMA_StochRSI"
+            
+    return None, 0, 0, ""
+
+# =========================================================================
+# STRATEGY 3: Bollinger Bands Middle Band (20 SMA) Pullback
+# =========================================================================
+def strategy_bb_middle_pullback(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
+    rsi_curr = df['RSI'].iloc[-2]
+    bb_middle = df['BB_middle'].iloc[-2]
+    ema200_val = df['EMA200'].iloc[-2]
+
+    if (c_close > ema200_val) and (c_low <= bb_middle or c_close <= bb_middle) and (rsi_curr <= 40) and is_green_reversal:
+        return "LONG", recent_low, df['EMA10'].iloc[-2], "BB_Middle_Pullback"
+
+    if (c_close < ema200_val) and (c_high >= bb_middle or c_close >= bb_middle) and (rsi_curr >= 60) and is_red_reversal:
+        return "SHORT", recent_high, df['EMA10'].iloc[-2], "BB_Middle_Pullback"
+        
+    return None, 0, 0, ""
+
+# =========================================================================
+# STRATEGY 4: MACD Zero-Line Break + 10 EMA Pullback
+# =========================================================================
+def strategy_macd_zeroline_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
+    macd_curr = df['MACD'].iloc[-2]
+    rsi_curr = df['RSI'].iloc[-2]
+    ema10_val = df['EMA10'].iloc[-2]
+
+    if (macd_curr > 0) and (c_low <= ema10_val or c_close <= ema10_val) and (35 <= rsi_curr <= 45) and is_green_reversal:
+        return "LONG", recent_low, ema10_val, "MACD_Zero_EMA10"
+
+    if (macd_curr < 0) and (c_high >= ema10_val or c_close >= ema10_val) and (55 <= rsi_curr <= 65) and is_red_reversal:
+        return "SHORT", recent_high, ema10_val, "MACD_Zero_EMA10"
+        
+    return None, 0, 0, ""
+
+# =========================================================================
+# STRATEGY 5: SuperTrend + 10 EMA Institutional Pullback
+# =========================================================================
+def strategy_supertrend_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
+    rsi_curr = df['RSI'].iloc[-2]
+    ema10_val = df['EMA10'].iloc[-2]
+    st_direction = df['ST_direction'].iloc[-2]
+
+    if (st_direction == 1) and (c_low <= ema10_val or c_close <= ema10_val) and (30 <= rsi_curr <= 40) and is_green_reversal:
+        return "LONG", recent_low, ema10_val, "SuperTrend_EMA10"
+
+    if (st_direction == -1) and (c_high >= ema10_val or c_close >= ema10_val) and (60 <= rsi_curr <= 70) and is_red_reversal:
+        return "SHORT", recent_high, ema10_val, "SuperTrend_EMA10"
+        
+    return None, 0, 0, ""
+
+# =========================================================================
+# CENTRAL SIGNAL ENGINE (MAIN CHECK FUNCTION)
+# =========================================================================
 def check_all_strategies_signal(symbol):
     try:
         klines = get_cached_klines(symbol)
@@ -250,6 +336,7 @@ def check_all_strategies_signal(symbol):
         
         df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
         df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
+        df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
         df['EMA10'] = df['close'].ewm(span=10, adjust=False).mean()
         
         df['BB_middle'] = df['close'].rolling(window=20).mean()
@@ -262,9 +349,8 @@ def check_all_strategies_signal(symbol):
         loss = (-delta.where(delta < 0, 0)).ewm(com=13, adjust=False).mean()
         df['RSI'] = 100 - (100 / (1 + (gain / loss)))
         
-        stoch_rsi_window = 14
-        df['RSI_min'] = df['RSI'].rolling(window=stoch_rsi_window).min()
-        df['RSI_max'] = df['RSI'].rolling(window=stoch_rsi_window).max()
+        df['RSI_min'] = df['RSI'].rolling(window=14).min()
+        df['RSI_max'] = df['RSI'].rolling(window=14).max()
         df['StochRSI'] = (df['RSI'] - df['RSI_min']) / (df['RSI_max'] - df['RSI_min'] + 1e-10)
         df['StochRSI_K'] = df['StochRSI'].rolling(window=3).mean() * 100
         df['StochRSI_D'] = df['StochRSI_K'].rolling(window=3).mean()
@@ -272,20 +358,33 @@ def check_all_strategies_signal(symbol):
         exp1 = df['close'].ewm(span=12, adjust=False).mean()
         exp2 = df['close'].ewm(span=26, adjust=False).mean()
         df['MACD'] = exp1 - exp2
-        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         
-        vp_df = df.iloc[-100:].copy()
-        price_bins = pd.cut(vp_df['close'], bins=20)
-        poc_bin = vp_df.groupby(price_bins, observed=False)['volume'].sum().idxmax()
-        poc_price = (poc_bin.left + poc_bin.right) / 2
+        high_low = df['high'] - df['low']
+        high_cp = (df['high'] - df['close'].shift()).abs()
+        low_cp = (df['low'] - df['close'].shift()).abs()
+        df['TR'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+        df['ATR'] = df['TR'].rolling(window=10).mean()
         
-        c_close = df['close'].iloc[-2]  
-        c_open = df['open'].iloc[-2]
-        c_high = df['high'].iloc[-2]
-        c_low = df['low'].iloc[-2]
+        df['ST_mid'] = (df['high'] + df['low']) / 2
+        df['ST_upper'] = df['ST_mid'] + (3 * df['ATR'])
+        df['ST_lower'] = df['ST_mid'] - (3 * df['ATR'])
         
-        p_close = df['close'].iloc[-3]  
-        p_open = df['open'].iloc[-3]
+        st_dir = []
+        current_dir = 1
+        for i in range(len(df)):
+            if i < 10:
+                st_dir.append(1)
+                continue
+            if df['close'].iloc[i] > df['ST_upper'].iloc[i-1]:
+                current_dir = 1
+            elif df['close'].iloc[i] < df['ST_lower'].iloc[i-1]:
+                current_dir = -1
+            st_dir.append(current_dir)
+        df['ST_direction'] = st_dir
+
+        c_close, c_open = df['close'].iloc[-2], df['open'].iloc[-2]
+        c_high, c_low = df['high'].iloc[-2], df['low'].iloc[-2]
+        p_close, p_open = df['close'].iloc[-3], df['open'].iloc[-3]
         
         is_green_reversal = (p_close < p_open) and (c_close > c_open)
         is_red_reversal = (p_close > p_open) and (c_close < c_open)
@@ -295,61 +394,25 @@ def check_all_strategies_signal(symbol):
 
         last_checked_candle_time[symbol] = last_candle_open_time
 
-        if abs(c_low - poc_price) / poc_price < 0.005 and is_green_reversal:
-            return "LONG", recent_low, df['EMA10'].iloc[-2], "Volume_Profile_POC"
-        if abs(c_high - poc_price) / poc_price < 0.005 and is_red_reversal:
-            return "SHORT", recent_high, df['EMA10'].iloc[-2], "Volume_Profile_POC"
-
-        bb_width = (df['BB_upper'].iloc[-2] - df['BB_lower'].iloc[-2]) / df['BB_middle'].iloc[-2]
-        is_squeeze = bb_width < 0.03
+        # 1. 50 EMA Pullback
+        side, sl, ema10, strat = strategy_50ema_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
+        if side: return side, sl, ema10, strat
         
-        if is_squeeze:
-            if c_close > df['EMA200'].iloc[-2] and c_close > df['BB_upper'].iloc[-2]:
-                return "LONG", recent_low, df['EMA10'].iloc[-2], "BB_Squeeze_Breakout"
-            if c_close < df['EMA200'].iloc[-2] and c_close < df['BB_lower'].iloc[-2]:
-                return "SHORT", recent_high, df['EMA10'].iloc[-2], "BB_Squeeze_Breakout"
-
-        stoch_k = df['StochRSI_K'].iloc[-2]
-        stoch_d = df['StochRSI_D'].iloc[-2]
-        prev_stoch_k = df['StochRSI_K'].iloc[-3]
-        prev_stoch_d = df['StochRSI_D'].iloc[-3]
+        # 2. 20 EMA + Stoch RSI
+        side, sl, ema10, strat = strategy_20ema_stoch_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
+        if side: return side, sl, ema10, strat
         
-        if c_close > df['EMA50'].iloc[-2] and (c_low <= df['EMA50'].iloc[-2] or c_close <= df['EMA10'].iloc[-2]):
-            if (prev_stoch_k < prev_stoch_d) and (stoch_k > stoch_d) and stoch_k < 20 and is_green_reversal:
-                return "LONG", recent_low, df['EMA10'].iloc[-2], "StochRSI_Pullback"
-                
-        if c_close < df['EMA50'].iloc[-2] and (c_high >= df['EMA50'].iloc[-2] or c_close >= df['EMA10'].iloc[-2]):
-            if (prev_stoch_k > prev_stoch_d) and (stoch_k < stoch_d) and stoch_k > 80 and is_red_reversal:
-                return "SHORT", recent_high, df['EMA10'].iloc[-2], "StochRSI_Pullback"
-
-        macd_curr = df['MACD'].iloc[-2]
-        macd_sig_curr = df['MACD_Signal'].iloc[-2]
-        macd_prev = df['MACD'].iloc[-3]
-        macd_sig_prev = df['MACD_Signal'].iloc[-3]
-
-        if (macd_prev <= macd_sig_prev) and (macd_curr > macd_sig_curr) and (c_close > df['EMA50'].iloc[-2]):
-            return "LONG", recent_low, df['EMA10'].iloc[-2], "MACD_Crossover"
-
-        if (macd_prev >= macd_sig_prev) and (macd_curr < macd_sig_curr) and (c_close < df['EMA50'].iloc[-2]):
-            return "SHORT", recent_high, df['EMA10'].iloc[-2], "MACD_Crossover"
-
-        rsi_curr = df['RSI'].iloc[-2]
-        rsi_prev = df['RSI'].iloc[-3]
-
-        if (rsi_prev < 30) and (rsi_curr >= 30) and is_green_reversal:
-            return "LONG", recent_low, df['EMA10'].iloc[-2], "RSI_Reversal"
-
-        if (rsi_prev > 70) and (rsi_curr <= 70) and is_red_reversal:
-            return "SHORT", recent_high, df['EMA10'].iloc[-2], "RSI_Reversal"
-
-        ema200_val = df['EMA200'].iloc[-2]
-        ema10_val = df['EMA10'].iloc[-2]
-
-        if (c_close > ema200_val) and (c_low <= ema10_val or c_close <= ema10_val) and (30 <= rsi_curr < 40) and is_green_reversal:
-            return "LONG", recent_low, ema10_val, "EMA10_RSI_Pullback"
-
-        if (c_close < ema200_val) and (c_high >= ema10_val or c_close >= ema10_val) and (60 < rsi_curr <= 70) and is_red_reversal:
-            return "SHORT", recent_high, ema10_val, "EMA10_RSI_Pullback"
+        # 3. BB Middle Pullback
+        side, sl, ema10, strat = strategy_bb_middle_pullback(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
+        if side: return side, sl, ema10, strat
+        
+        # 4. MACD Zero-Line EMA10
+        side, sl, ema10, strat = strategy_macd_zeroline_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
+        if side: return side, sl, ema10, strat
+        
+        # 5. SuperTrend + 10 EMA
+        side, sl, ema10, strat = strategy_supertrend_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
+        if side: return side, sl, ema10, strat
 
         return None, 0, 0, ""
     except Exception as e:
@@ -476,7 +539,7 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
     active_trades[symbol] = False
 
 def market_scanner_loop():
-    print("🔄 Rate-Limit Free 6-Strategy Market Scanner active...")
+    print("🔄 Rate-Limit Free 5-Strategy Market Scanner active...")
     try:
         with api_lock:
             for symbol in COINS:
@@ -535,7 +598,7 @@ def market_scanner_loop():
                         tp1_price = format_price(symbol, exec_price - sl_distance)
                     
                     send_telegram(
-                        f"🚀 *6-STRATEGY SIGNAL MATCHED [{strat_name}]*\n"
+                        f"🚀 *5-STRATEGY SIGNAL MATCHED [{strat_name}]*\n"
                         f"Pair: `{symbol}` | Side: `{side}` | Entry: `{exec_price}`\n"
                         f"TP1 (1:1): `{tp1_price}` | SL: `{stop_loss_price}`"
                     )
@@ -544,7 +607,6 @@ def market_scanner_loop():
                     t.daemon = True
                     t.start()
                 
-                # Coin တစ်ခုချင်းစီ စစ်ဆေးအပြီးတွင် Request Weight မပိစေရန် 3 စက္ကန့်စီ ခေတ္တရပ်ပေးပါ
                 time.sleep(3)
                 
         except Exception as e:
@@ -569,7 +631,7 @@ def start_websocket():
     print("📡 Binance Futures WebSocket Stream Connected.")
 
 def run_concurrent_bots():
-    msg = f"🚀 *Rate-Limit Free 6-Strategy Bot Running* (Strategies: POC, BB Squeeze, StochRSI, MACD, RSI Reversal, 10EMA Pullback)"
+    msg = f"🚀 *Rate-Limit Free 5-Strategy Bot Running* (Strategies: 50EMA RSI, 20EMA StochRSI, BB Middle, MACD Zero, SuperTrend)"
     print(msg)
     send_telegram(msg)
     
