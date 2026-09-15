@@ -31,7 +31,6 @@ client.API_URL = f"{FUTURES_BASE}/fapi"
 
 COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "LINKUSDT"]
 
-# User Configurations
 LEVERAGE = 5
 TOTAL_MARGIN = 30.0  
 DAILY_PROFIT_LIMIT = 5.0    
@@ -210,11 +209,13 @@ def close_all_positions(reason="Limit Hit"):
 
 def get_cached_klines(symbol):
     current_time = time.time()
-    if symbol in klines_cache and (current_time - last_kline_fetch_time.get(symbol, 0)) < 1800:
+    # Cache သက်တမ်းကို ၅ မိနစ် (300 စက္ကန့်) အထိ တိုးမြှင့်လိုက်သည် (Rate Limit ကာကွယ်ရန်)
+    if symbol in klines_cache and (current_time - last_kline_fetch_time.get(symbol, 0)) < 300:
         return klines_cache[symbol]
     
     try:
         with api_lock:
+            time.sleep(2) # Request ကြားတွင် နှေးကွေးစေရန်
             klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=250)
         if klines:
             klines_cache[symbol] = klines
@@ -225,9 +226,7 @@ def get_cached_klines(symbol):
     
     return klines_cache.get(symbol, None)
 
-# =========================================================================
-# STRATEGY 1: 50 EMA Dynamic Pullback + RSI
-# =========================================================================
+# STRATEGY FUNCTIONS (unchanged)
 def strategy_50ema_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
     rsi_curr = df['RSI'].iloc[-2]
     ema200_val = df['EMA200'].iloc[-2]
@@ -235,15 +234,10 @@ def strategy_50ema_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_rev
 
     if (c_close > ema200_val) and (c_low <= ema50_val or c_close <= ema50_val) and (35 <= rsi_curr <= 45) and is_green_reversal:
         return "LONG", recent_low, df['EMA10'].iloc[-2], "50EMA_RSI_Pullback"
-
     if (c_close < ema200_val) and (c_high >= ema50_val or c_close >= ema50_val) and (55 <= rsi_curr <= 65) and is_red_reversal:
         return "SHORT", recent_high, df['EMA10'].iloc[-2], "50EMA_RSI_Pullback"
-        
     return None, 0, 0, ""
 
-# =========================================================================
-# STRATEGY 2: 20 EMA + Stochastic RSI Multi-Filter
-# =========================================================================
 def strategy_20ema_stoch_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
     stoch_k = df['StochRSI_K'].iloc[-2]
     stoch_d = df['StochRSI_D'].iloc[-2]
@@ -255,16 +249,11 @@ def strategy_20ema_stoch_rsi(df, c_close, c_low, c_high, is_green_reversal, is_r
     if (c_close > ema200_val) and (c_low <= ema20_val or c_close <= ema20_val):
         if (prev_stoch_k < prev_stoch_d) and (stoch_k > stoch_d) and stoch_k < 20 and is_green_reversal:
             return "LONG", recent_low, df['EMA10'].iloc[-2], "20EMA_StochRSI"
-            
     if (c_close < ema200_val) and (c_high >= ema20_val or c_close >= ema20_val):
         if (prev_stoch_k > prev_stoch_d) and (stoch_k < stoch_d) and stoch_k > 80 and is_red_reversal:
             return "SHORT", recent_high, df['EMA10'].iloc[-2], "20EMA_StochRSI"
-            
     return None, 0, 0, ""
 
-# =========================================================================
-# STRATEGY 3: Bollinger Bands Middle Band (20 SMA) Pullback
-# =========================================================================
 def strategy_bb_middle_pullback(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
     rsi_curr = df['RSI'].iloc[-2]
     bb_middle = df['BB_middle'].iloc[-2]
@@ -272,15 +261,10 @@ def strategy_bb_middle_pullback(df, c_close, c_low, c_high, is_green_reversal, i
 
     if (c_close > ema200_val) and (c_low <= bb_middle or c_close <= bb_middle) and (rsi_curr <= 40) and is_green_reversal:
         return "LONG", recent_low, df['EMA10'].iloc[-2], "BB_Middle_Pullback"
-
     if (c_close < ema200_val) and (c_high >= bb_middle or c_close >= bb_middle) and (rsi_curr >= 60) and is_red_reversal:
         return "SHORT", recent_high, df['EMA10'].iloc[-2], "BB_Middle_Pullback"
-        
     return None, 0, 0, ""
 
-# =========================================================================
-# STRATEGY 4: MACD Zero-Line Break + 10 EMA Pullback
-# =========================================================================
 def strategy_macd_zeroline_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
     macd_curr = df['MACD'].iloc[-2]
     rsi_curr = df['RSI'].iloc[-2]
@@ -288,15 +272,10 @@ def strategy_macd_zeroline_ema10(df, c_close, c_low, c_high, is_green_reversal, 
 
     if (macd_curr > 0) and (c_low <= ema10_val or c_close <= ema10_val) and (35 <= rsi_curr <= 45) and is_green_reversal:
         return "LONG", recent_low, ema10_val, "MACD_Zero_EMA10"
-
     if (macd_curr < 0) and (c_high >= ema10_val or c_close >= ema10_val) and (55 <= rsi_curr <= 65) and is_red_reversal:
         return "SHORT", recent_high, ema10_val, "MACD_Zero_EMA10"
-        
     return None, 0, 0, ""
 
-# =========================================================================
-# STRATEGY 5: SuperTrend + 10 EMA Institutional Pullback
-# =========================================================================
 def strategy_supertrend_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
     rsi_curr = df['RSI'].iloc[-2]
     ema10_val = df['EMA10'].iloc[-2]
@@ -304,15 +283,10 @@ def strategy_supertrend_ema10(df, c_close, c_low, c_high, is_green_reversal, is_
 
     if (st_direction == 1) and (c_low <= ema10_val or c_close <= ema10_val) and (30 <= rsi_curr <= 40) and is_green_reversal:
         return "LONG", recent_low, ema10_val, "SuperTrend_EMA10"
-
     if (st_direction == -1) and (c_high >= ema10_val or c_close >= ema10_val) and (60 <= rsi_curr <= 70) and is_red_reversal:
         return "SHORT", recent_high, ema10_val, "SuperTrend_EMA10"
-        
     return None, 0, 0, ""
 
-# =========================================================================
-# CENTRAL SIGNAL ENGINE (MAIN CHECK FUNCTION)
-# =========================================================================
 def check_all_strategies_signal(symbol):
     try:
         klines = get_cached_klines(symbol)
@@ -394,23 +368,18 @@ def check_all_strategies_signal(symbol):
 
         last_checked_candle_time[symbol] = last_candle_open_time
 
-        # 1. 50 EMA Pullback
         side, sl, ema10, strat = strategy_50ema_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
         if side: return side, sl, ema10, strat
         
-        # 2. 20 EMA + Stoch RSI
         side, sl, ema10, strat = strategy_20ema_stoch_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
         if side: return side, sl, ema10, strat
         
-        # 3. BB Middle Pullback
         side, sl, ema10, strat = strategy_bb_middle_pullback(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
         if side: return side, sl, ema10, strat
         
-        # 4. MACD Zero-Line EMA10
         side, sl, ema10, strat = strategy_macd_zeroline_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
         if side: return side, sl, ema10, strat
         
-        # 5. SuperTrend + 10 EMA
         side, sl, ema10, strat = strategy_supertrend_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
         if side: return side, sl, ema10, strat
 
@@ -436,7 +405,6 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
         active_trades[symbol] = False
         return
 
-    print(f"📡 Monitoring {symbol} {side} [{strat_name}] position...")
     while True:
         try:
             is_stopped, current_pnl = check_daily_limit()
@@ -520,10 +488,10 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                         send_telegram(f"🏁 *{symbol} SHORT Exit Hit!* [{strat_name}] Closed remaining half.")
                         break
 
-            time.sleep(10)
+            time.sleep(15)
         except Exception as e:
             print(f"Monitoring Error on {symbol}: {e}")
-            time.sleep(10)
+            time.sleep(15)
             
     try:
         with api_lock:
@@ -547,7 +515,7 @@ def market_scanner_loop():
                     client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
                 except:
                     pass
-                time.sleep(1)
+                time.sleep(2)
     except:
         pass
 
@@ -560,7 +528,7 @@ def market_scanner_loop():
 
             active_count = sum(1 for s in COINS if active_trades.get(s, False))
             if active_count >= MAX_ACTIVE_TRADES:
-                time.sleep(10)
+                time.sleep(15)
                 continue
 
             for symbol in COINS:
@@ -607,12 +575,14 @@ def market_scanner_loop():
                     t.daemon = True
                     t.start()
                 
-                time.sleep(3)
+                # Coin တစ်ခုချင်းစီ စစ်ဆေးသည့်အခါ ကြားထဲတွင် ၅ စက္ကန့်စီ အနားပေးခြင်း (Rate limit ကာကွယ်ရန်)
+                time.sleep(5)
                 
         except Exception as e:
             print(f"Error in scanner loop: {e}")
         
-        time.sleep(30)
+        # Loop တစ်ပတ်ပတ်ပြီးတိုင်း မိနစ်ဝက်ခန့် ခေတ္တစောင့်ဆိုင်းရန်
+        time.sleep(60)
 
 def handle_socket_message(msg):
     if msg.get('e') == 'bookTicker':
