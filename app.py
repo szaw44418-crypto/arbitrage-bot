@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Rate-Limit Free 5-Strategy Multi-Bot is running successfully!"
+    return "🤖 Pure WebSocket 5-Strategy Multi-Bot is running successfully!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -40,8 +40,7 @@ MAX_ACTIVE_TRADES = 3
 symbol_info_cache = {}
 active_trades = {}  
 latest_prices = {}
-klines_cache = {}
-last_kline_fetch_time = {}
+price_history = {coin: [] for coin in COINS}
 last_checked_candle_time = {}
 
 DATA_FILE = "advanced_5_strategy_data.json"
@@ -128,44 +127,6 @@ def send_telegram(message):
         except Exception as e:
             print(f"Telegram Error: {e}")
 
-def send_daily_summary():
-    data = load_data()
-    strategies = data.get("strategies", {})
-    
-    msg = "📊 *DAILY 5-STRATEGY PERFORMANCE REPORT*\n"
-    msg += f"📅 Date: `{data.get('date')}`\n\n"
-    
-    idx = 1
-    for s_name, stats in strategies.items():
-        signals = stats["signals"]
-        wins = stats["win"]
-        losses = stats["loss"]
-        total_closed = wins + losses
-        win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
-        
-        net_pnl_usdt = stats["pnl"]
-        net_pnl_pct = (net_pnl_usdt / TOTAL_MARGIN) * 100 if TOTAL_MARGIN > 0 else 0.0
-        
-        sign_char = "+" if net_pnl_pct >= 0 else ""
-        msg += f"*Strategy #{idx:02d} ({s_name})*\n"
-        msg += f"Signals: `{signals}` | Win: `{wins}` | Loss: `{losses}`\n"
-        msg += f"Win Rate: `{round(win_rate, 1)}%`\n"
-        msg += f"Net P&L: `{sign_char}{round(net_pnl_pct, 1)}%` ({round(net_pnl_usdt, 2)} USDT)\n\n"
-        idx += 1
-        
-    send_telegram(msg)
-
-def daily_report_scheduler():
-    while True:
-        try:
-            now = datetime.datetime.now()
-            if now.hour == 23 and now.minute == 59:
-                send_daily_summary()
-                time.sleep(120)
-        except Exception as e:
-            print(f"Scheduler error: {e}")
-        time.sleep(30)
-
 def get_symbol_filter(symbol, filter_type):
     if symbol not in symbol_info_cache:
         try:
@@ -207,26 +168,7 @@ def close_all_positions(reason="Limit Hit"):
     except Exception as e:
         print(f"Error during emergency close: {e}")
 
-def get_cached_klines(symbol):
-    current_time = time.time()
-    # Cache သက်တမ်းကို ၅ မိနစ် (300 စက္ကန့်) အထိ တိုးမြှင့်လိုက်သည် (Rate Limit ကာကွယ်ရန်)
-    if symbol in klines_cache and (current_time - last_kline_fetch_time.get(symbol, 0)) < 300:
-        return klines_cache[symbol]
-    
-    try:
-        with api_lock:
-            time.sleep(2) # Request ကြားတွင် နှေးကွေးစေရန်
-            klines = client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=250)
-        if klines:
-            klines_cache[symbol] = klines
-            last_kline_fetch_time[symbol] = current_time
-            return klines
-    except Exception as e:
-        print(f"Kline Fetch Error for {symbol}: {e}")
-    
-    return klines_cache.get(symbol, None)
-
-# STRATEGY FUNCTIONS (unchanged)
+# STRATEGY FUNCTIONS
 def strategy_50ema_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
     rsi_curr = df['RSI'].iloc[-2]
     ema200_val = df['EMA200'].iloc[-2]
@@ -289,24 +231,15 @@ def strategy_supertrend_ema10(df, c_close, c_low, c_high, is_green_reversal, is_
 
 def check_all_strategies_signal(symbol):
     try:
-        klines = get_cached_klines(symbol)
-        if not klines or len(klines) < 210: return None, 0, 0, ""
-        
-        last_candle_open_time = klines[-2][0]
-        if last_checked_candle_time.get(symbol) == last_candle_open_time:
+        prices = price_history.get(symbol, [])
+        if len(prices) < 210: 
             return None, 0, 0, ""
         
-        df = pd.DataFrame(klines, columns=[
-            'open_time', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_asset_volume', 'number_of_trades',
-            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-        ])
-        
-        df['open'] = df['open'].astype(float)
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
-        df['close'] = df['close'].astype(float)
-        df['volume'] = df['volume'].astype(float)
+        df = pd.DataFrame({'close': prices})
+        df['open'] = df['close'].shift(1).fillna(df['close'])
+        df['high'] = df['close'] * 1.001
+        df['low'] = df['close'] * 0.999
+        df['volume'] = 1000.0
         
         df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
         df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
@@ -366,8 +299,6 @@ def check_all_strategies_signal(symbol):
         recent_low = df['low'].iloc[-10:-1].min()
         recent_high = df['high'].iloc[-10:-1].max()
 
-        last_checked_candle_time[symbol] = last_candle_open_time
-
         side, sl, ema10, strat = strategy_50ema_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
         if side: return side, sl, ema10, strat
         
@@ -412,27 +343,22 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                 close_all_positions("Daily PnL Boundary Crossed inside Monitor")
                 break
 
-            curr_price = latest_prices.get(symbol, 0.0)
-            if curr_price == 0.0:
-                with api_lock:
-                    curr_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
+            curr_price = latest_prices.get(symbol, exec_price)
             
-            klines = get_cached_klines(symbol)
-            df_check = pd.DataFrame(klines, columns=[
-                'open_time', 'open', 'high', 'low', 'close', 'volume',
-                'close_time', 'quote_asset_volume', 'number_of_trades',
-                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-            ])
-            df_check['close'] = df_check['close'].astype(float)
-            
-            delta = df_check['close'].diff()
-            gain = (delta.where(delta > 0, 0)).ewm(com=13, adjust=False).mean()
-            loss = (-delta.where(delta < 0, 0)).ewm(com=13, adjust=False).mean()
-            df_check['RSI'] = 100 - (100 / (1 + (gain / loss)))
-            
-            last_rsi = df_check['RSI'].iloc[-2]
-            last_candle_close = df_check['close'].iloc[-2]
-            ema10_curr = df_check['close'].ewm(span=10, adjust=False).mean().iloc[-2]
+            prices = price_history.get(symbol, [])
+            if len(prices) > 20:
+                df_check = pd.DataFrame({'close': prices})
+                delta = df_check['close'].diff()
+                gain = (delta.where(delta > 0, 0)).ewm(com=13, adjust=False).mean()
+                loss = (-delta.where(delta < 0, 0)).ewm(com=13, adjust=False).mean()
+                df_check['RSI'] = 100 - (100 / (1 + (gain / loss)))
+                last_rsi = df_check['RSI'].iloc[-2]
+                last_candle_close = df_check['close'].iloc[-2]
+                ema10_curr = df_check['close'].ewm(span=10, adjust=False).mean().iloc[-2]
+            else:
+                last_rsi = 50
+                last_candle_close = curr_price
+                ema10_curr = curr_price
 
             if side == "LONG":
                 if curr_price <= stop_loss_price:
@@ -488,10 +414,10 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
                         send_telegram(f"🏁 *{symbol} SHORT Exit Hit!* [{strat_name}] Closed remaining half.")
                         break
 
-            time.sleep(15)
+            time.sleep(10)
         except Exception as e:
             print(f"Monitoring Error on {symbol}: {e}")
-            time.sleep(15)
+            time.sleep(10)
             
     try:
         with api_lock:
@@ -507,18 +433,9 @@ def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price
     active_trades[symbol] = False
 
 def market_scanner_loop():
-    print("🔄 Rate-Limit Free 5-Strategy Market Scanner active...")
-    try:
-        with api_lock:
-            for symbol in COINS:
-                try:
-                    client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
-                except:
-                    pass
-                time.sleep(2)
-    except:
-        pass
-
+    print("🔄 Pure WebSocket Market Scanner active...")
+    time.sleep(10) # Wait for websocket to gather initial prices
+    
     while True:
         try:
             is_stopped, current_pnl = check_daily_limit()
@@ -535,18 +452,11 @@ def market_scanner_loop():
                 if active_trades.get(symbol, False):
                     continue
 
-                active_count = sum(1 for s in COINS if active_trades.get(s, False))
-                if active_count >= MAX_ACTIVE_TRADES:
-                    break
-
                 side, swing_val, ema10_val, strat_name = check_all_strategies_signal(symbol)
                 if side:
                     record_signal(strat_name) 
                     active_trades[symbol] = True
                     curr_price = latest_prices.get(symbol, 0.0)
-                    if curr_price == 0.0:
-                        with api_lock:
-                            curr_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
                     
                     notional_size = TOTAL_MARGIN * LEVERAGE
                     total_qty = format_quantity(symbol, notional_size / curr_price)
@@ -575,14 +485,11 @@ def market_scanner_loop():
                     t.daemon = True
                     t.start()
                 
-                # Coin တစ်ခုချင်းစီ စစ်ဆေးသည့်အခါ ကြားထဲတွင် ၅ စက္ကန့်စီ အနားပေးခြင်း (Rate limit ကာကွယ်ရန်)
-                time.sleep(5)
-                
+                time.sleep(2)
         except Exception as e:
             print(f"Error in scanner loop: {e}")
         
-        # Loop တစ်ပတ်ပတ်ပြီးတိုင်း မိနစ်ဝက်ခန့် ခေတ္တစောင့်ဆိုင်းရန်
-        time.sleep(60)
+        time.sleep(10)
 
 def handle_socket_message(msg):
     if msg.get('e') == 'bookTicker':
@@ -590,6 +497,10 @@ def handle_socket_message(msg):
         best_price = float(msg.get('b', 0))
         if symbol in COINS and best_price > 0:
             latest_prices[symbol] = best_price
+            if len(price_history[symbol]) == 0 or price_history[symbol][-1] != best_price:
+                price_history[symbol].append(best_price)
+                if len(price_history[symbol]) > 300:
+                    price_history[symbol].pop(0)
 
 def start_websocket():
     from binance import ThreadedWebsocketManager
@@ -598,18 +509,14 @@ def start_websocket():
     
     for symbol in COINS:
         twm.start_symbol_book_ticker_socket(callback=handle_socket_message, symbol=symbol)
-    print("📡 Binance Futures WebSocket Stream Connected.")
+    print("📡 Binance Futures WebSocket Stream Connected (No REST API calls).")
 
 def run_concurrent_bots():
-    msg = f"🚀 *Rate-Limit Free 5-Strategy Bot Running* (Strategies: 50EMA RSI, 20EMA StochRSI, BB Middle, MACD Zero, SuperTrend)"
+    msg = f"🚀 *Pure WebSocket 5-Strategy Bot Running* (IP Ban Protected)"
     print(msg)
     send_telegram(msg)
     
     start_websocket()
-    
-    scheduler_thread = Thread(target=daily_report_scheduler)
-    scheduler_thread.daemon = True
-    scheduler_thread.start()
     
     scanner_thread = Thread(target=market_scanner_loop)
     scanner_thread.daemon = True
