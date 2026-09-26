@@ -1,530 +1,410 @@
-import os
-import time
-import math
 import requests
-import datetime
-import json
-from threading import Thread, Lock
-from flask import Flask
-import pandas as pd
-from binance.client import Client
+from flask import Flask, render_template_string
+from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 
+# Binance Futures REST API Endpoints
+KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
+OI_HIST_URL = "https://fapi.binance.com/futures/data/openInterestHist"
+TICKER_24H_URL = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+
+# Crypto Sector အလိုက် Coins များ (ထပ်မံတိုးချဲ့ထားသည်)
+SECTOR_MAP = {
+    'Layer 1 / L1': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'SUIUSDT', 'ADAUSDT', 'AVAXUSDT', 'APTUSDT', 'SEIUSDT', 'TONUSDT', 'DOTUSDT', 'NEARUSDT', 'TRXUSDT', 'BCHUSDT', 'LTCUSDT', 'XRPUSDT', 'ATOMUSDT', 'FTMUSDT', 'INJUSDT'],
+    'AI & Big Data': ['NEARUSDT', 'RENDERUSDT', 'FETUSDT', 'TAOUSDT', 'GRTUSDT', 'WLDUSDT', 'ARKMUSDT', 'AGIXUSDT', 'THETAUSDT', 'AKTUSDT'],
+    'DeFi & DEX': ['UNIUSDT', 'AAVEUSDT', 'PENDLEUSDT', 'ENAUSDT', 'MKRUSDT', 'CRVUSDT', 'LDOUSDT', 'SNXUSDT', 'COMPUSDT', 'JUPUSDT', 'RAYUSDT', 'DYDXUSDT'],
+    'Meme Coins': ['DOGEUSDT', 'PEPEUSDT', 'SHIBUSDT', 'WIFUSDT', 'BONKUSDT', 'FLOKIUSDT', 'MEMEUSDT', 'BOMEUSDT', 'POPCATUSDT', 'NEIROUSDT'],
+    'Layer 2 / L2': ['OPUSDT', 'ARBUSDT', 'STRKUSDT', 'POLUSDT', 'IMXUSDT', 'MANTAUSDT', 'METISUSDT', 'ZKUSDT'],
+    'Gaming & Meta': ['GALAUSDT', 'AXSUSDT', 'SANDUSDT', 'MANAUSDT', 'BEAMXUSDT', 'PIXELUSDT', 'YGGUSDT'],
+    'RWA & Storage': ['ONDOUSDT', 'OMUSDT', 'FILUSDT', 'ARUSDT', 'LINKUSDT', 'TIAUSDT'],
+    'TradFi & Commodities': ['XAUUSDT', 'XAGUSDT', 'CLUSDT', 'SOXLUSDT']
+}
+
+def format_number(num):
+    """ ကိန်းဂဏန်းများကို M (Million), B (Billion) ဖြင့် ပြသခြင်း """
+    if num >= 1e9:
+        return f"${num/1e9:.2f}B"
+    elif num >= 1e6:
+        return f"${num/1e6:.1f}M"
+    else:
+        return f"${num:,.2f}"
+
+def get_all_futures_tickers():
+    """ Binance Futures ဒေတာ အားလုံး ရယူခြင်း """
+    try:
+        res = requests.get(TICKER_24H_URL, timeout=10).json()
+        return {item['symbol']: item for item in res if item['symbol'].endswith('USDT')}
+    except Exception as e:
+        print(f"Error fetching tickers: {e}")
+        return {}
+
+def calculate_sector_flow(tickers_dict):
+    sector_summary = []
+    for sector_name, symbols in SECTOR_MAP.items():
+        total_vol = 0.0
+        change_sum = 0.0
+        count = 0
+        top_gainer_symbol = "-"
+        max_change = -999.0
+        
+        for sym in symbols:
+            if sym in tickers_dict:
+                t = tickers_dict[sym]
+                vol = float(t['quoteVolume'])
+                chg = float(t['priceChangePercent'])
+                
+                total_vol += vol
+                change_sum += chg
+                count += 1
+                
+                if chg > max_change:
+                    max_change = chg
+                    top_gainer_symbol = f"{sym.replace('USDT','')} ({chg:+.1f}%)"
+                    
+        avg_change = (change_sum / count) if count > 0 else 0.0
+        sector_summary.append({
+            'name': sector_name,
+            'vol_formatted': format_number(total_vol),
+            'vol': total_vol,
+            'avg_change': avg_change,
+            'top_gainer': top_gainer_symbol
+        })
+        
+    return sorted(sector_summary, key=lambda x: x['vol'], reverse=True)
+
+def calculate_ema(data, period):
+    if len(data) < period:
+        return []
+    alpha = 2 / (period + 1)
+    ema = [sum(data[:period]) / period]
+    for val in data[period:]:
+        ema.append((val * alpha) + (ema[-1] * (1 - alpha)))
+    return ema
+
+def calculate_rsi(closes, period=14):
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i-1]
+        gains.append(max(diff, 0))
+        losses.append(max(-diff, 0))
+    if len(gains) < period:
+        return []
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    rsi = [100 - (100 / (1 + (avg_gain / (avg_loss if avg_loss != 0 else 1e-10))))]
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        rsi.append(100 - (100 / (1 + (avg_gain / (avg_loss if avg_loss != 0 else 1e-10)))))
+    return rsi
+
+def calculate_obv(closes, volumes):
+    obv = [0]
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i-1]:
+            obv.append(obv[-1] + volumes[i])
+        elif closes[i] < closes[i-1]:
+            obv.append(obv[-1] - volumes[i])
+        else:
+            obv.append(obv[-1])
+    return obv
+
+def calculate_dmi(highs, lows, closes, period=14):
+    tr_list, dmp_list, dmn_list = [], [], []
+    for i in range(1, len(closes)):
+        h, l, p_c = highs[i], lows[i], closes[i-1]
+        tr = max(h - l, abs(h - p_c), abs(l - p_c))
+        up_move = h - highs[i-1]
+        down_move = lows[i-1] - l
+        dmp = up_move if (up_move > down_move and up_move > 0) else 0
+        dmn = down_move if (down_move > up_move and down_move > 0) else 0
+        tr_list.append(tr)
+        dmp_list.append(dmp)
+        dmn_list.append(dmn)
+    if len(tr_list) < period:
+        return None, None
+    smooth_tr = sum(tr_list[:period])
+    smooth_dmp = sum(dmp_list[:period])
+    smooth_dmn = sum(dmn_list[:period])
+    for i in range(period, len(tr_list)):
+        smooth_tr = smooth_tr - (smooth_tr / period) + tr_list[i]
+        smooth_dmp = smooth_dmp - (smooth_dmp / period) + dmp_list[i]
+        smooth_dmn = smooth_dmn - (smooth_dmn / period) + dmn_list[i]
+    pos_di = 100 * (smooth_dmp / smooth_tr) if smooth_tr != 0 else 0
+    neg_di = 100 * (smooth_dmn / smooth_tr) if smooth_tr != 0 else 0
+    return pos_di, neg_di
+
+def get_timeframe_trend(symbol, interval):
+    try:
+        res = requests.get(KLINE_URL, params={'symbol': symbol, 'interval': interval, 'limit': 30}, timeout=4).json()
+        if not isinstance(res, list) or len(res) < 25:
+            return "NEUTRAL"
+        closes = [float(k[4]) for k in res]
+        ema7 = calculate_ema(closes, 7)
+        ema25 = calculate_ema(closes, 25)
+        if ema7 and ema25:
+            if closes[-1] > ema7[-1] > ema25[-1]:
+                return "BULLISH"
+            elif closes[-1] < ema7[-1] < ema25[-1]:
+                return "BEARISH"
+    except Exception:
+        pass
+    return "NEUTRAL"
+
+def get_oi_change(symbol):
+    try:
+        res = requests.get(OI_HIST_URL, params={'symbol': symbol, 'period': '1h', 'limit': 2}, timeout=4).json()
+        if isinstance(res, list) and len(res) >= 2:
+            prev_oi = float(res[0]['sumOpenInterest'])
+            curr_oi = float(res[1]['sumOpenInterest'])
+            if prev_oi > 0:
+                return round(((curr_oi - prev_oi) / prev_oi) * 100, 2)
+    except Exception:
+        pass
+    return 0.0
+
+def process_symbol_data(ticker):
+    symbol = ticker['symbol']
+    price = float(ticker['lastPrice'])
+    price_change = float(ticker['priceChangePercent'])
+    volume_24h = float(ticker['quoteVolume'])
+    
+    # Volume အလွန်နည်းသော Coin များကို ခေတ္တချန်လှပ်၍ Speed မြှင့်ခြင်း (ဥပမာ $1M Volume အောက်)
+    if volume_24h < 1000000:
+        return None
+    
+    try:
+        res = requests.get(KLINE_URL, params={'symbol': symbol, 'interval': '1h', 'limit': 100}, timeout=5).json()
+        if not isinstance(res, list) or len(res) < 60:
+            return None
+            
+        highs = [float(k[2]) for k in res]
+        lows = [float(k[3]) for k in res]
+        closes = [float(k[4]) for k in res]
+        volumes = [float(k[5]) for k in res]
+        
+        rsi_vals = calculate_rsi(closes, 14)
+        rsi_ema_vals = calculate_ema(rsi_vals, 9) if rsi_vals else []
+        obv_vals = calculate_obv(closes, volumes)
+        obv_ema50_vals = calculate_ema(obv_vals, 50) if obv_vals else []
+        pos_di, neg_di = calculate_dmi(highs, lows, closes, 14)
+        oi_change_pct = get_oi_change(symbol)
+        
+        tf_15m = get_timeframe_trend(symbol, '15m')
+        tf_1h = get_timeframe_trend(symbol, '1h')
+        tf_4h = get_timeframe_trend(symbol, '4h')
+        
+        if not rsi_vals or not rsi_ema_vals or not obv_ema50_vals or pos_di is None:
+            return None
+            
+        rsi_ema_check = rsi_vals[-1] > rsi_ema_vals[-1]
+        rsi_50_check = rsi_vals[-1] > 50
+        obv_check = obv_vals[-1] > obv_ema50_vals[-1]
+        oi_rising_check = oi_change_pct > 0
+        dmi_state = "YES" if pos_di > neg_di else ("NO" if pos_di < neg_di else "FLAT")
+
+        bull_checks = [dmi_state == "YES", rsi_ema_check, rsi_50_check, obv_check, oi_rising_check]
+        bear_checks = [dmi_state == "NO", not rsi_ema_check, not rsi_50_check, not obv_check, oi_rising_check]
+
+        return {
+            'symbol': symbol,
+            'price': f"{price:g}",
+            'price_change': price_change,
+            'vol_formatted': format_number(volume_24h),
+            'tf_15m': tf_15m,
+            'tf_1h': tf_1h,
+            'tf_4h': tf_4h,
+            'dmi': dmi_state,
+            'rsi_ema': "YES" if rsi_ema_check else "NO",
+            'rsi_50': "YES" if rsi_50_check else "NO",
+            'obv': "YES" if obv_check else "NO",
+            'oi_rising': "YES" if oi_rising_check else "NO",
+            'oi_pct': f"{'+' if oi_change_pct > 0 else ''}{oi_change_pct:.2f}%",
+            'oi_pct_val': oi_change_pct,
+            'bull_score': sum(bull_checks),
+            'bear_score': sum(bear_checks)
+        }
+    except Exception:
+        return None
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>All Cryptos Trend & Sector Radar</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <style>
+        body { background-color: #0b0e11; color: #eaecef; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .card-custom { background-color: #181a20; border: 1px solid #2b313a; border-radius: 8px; }
+        .card-stat h6 { color: #848e9c; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 5px; }
+        .card-stat h3 { margin: 0; font-weight: bold; }
+        .table-custom { background-color: #181a20; border-radius: 8px; overflow: hidden; border: 1px solid #2b313a; }
+        .table-custom table { color: #eaecef; margin-bottom: 0; }
+        .table-custom th { background-color: #181a20; color: #848e9c; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; border-bottom: 1px solid #2b313a; padding: 12px 8px; }
+        .table-custom td { padding: 10px 8px; border-bottom: 1px solid #2b313a; font-size: 0.85rem; vertical-align: middle; }
+        
+        .badge-yes, .tf-BULLISH { background-color: #0ecb81; color: #000; font-weight: bold; padding: 3px 6px; border-radius: 4px; font-size: 0.75rem; }
+        .badge-no, .tf-BEARISH { background-color: #f6465d; color: #fff; font-weight: bold; padding: 3px 6px; border-radius: 4px; font-size: 0.75rem; }
+        .badge-flat, .tf-NEUTRAL { background-color: #474d57; color: #eaecef; padding: 3px 6px; border-radius: 4px; font-size: 0.75rem; }
+        
+        .text-green { color: #0ecb81 !important; }
+        .text-red { color: #f6465d !important; }
+        .score-box { font-weight: bold; padding: 2px 6px; border-radius: 4px; display: inline-block; }
+        .score-bull { background-color: rgba(14, 203, 129, 0.2); color: #0ecb81; }
+        .score-bear { background-color: rgba(246, 70, 93, 0.2); color: #f6465d; }
+        .section-title { color: #f0b90b; font-size: 1.1rem; font-weight: bold; margin-bottom: 12px; }
+    </style>
+</head>
+<body class="p-2 p-md-4">
+    <div class="container-fluid">
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <div>
+                <h4 class="fw-bold mb-0 text-white">All Coins Trend & Sector Radar</h4>
+                <small class="text-secondary">Binance Futures — Full Market Scanner (All Pairs)</small>
+            </div>
+            <a href="/" class="btn btn-warning btn-sm fw-bold">⚡ Refresh All</a>
+        </div>
+
+        <!-- Summary Cards -->
+        <div class="row g-2 mb-4">
+            <div class="col-6 col-md-3">
+                <div class="card-custom p-3 card-stat">
+                    <h6>PAIRS SCANNED</h6>
+                    <h3 class="text-white">{{ stats.total }}</h3>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card-custom p-3 card-stat">
+                    <h6>BULLISH ALIGNED (4-5/5)</h6>
+                    <h3 class="text-green">{{ stats.bullish }}</h3>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card-custom p-3 card-stat">
+                    <h6>BEARISH ALIGNED (4-5/5)</h6>
+                    <h3 class="text-red">{{ stats.bearish }}</h3>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card-custom p-3 card-stat">
+                    <h6>OI RISING</h6>
+                    <h3 class="text-warning">{{ stats.oi_rising }}</h3>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 1: SECTOR FLOW RADAR -->
+        <div class="mb-4">
+            <div class="section-title">📊 SECTOR FLOW RADAR</div>
+            <div class="table-custom shadow-lg">
+                <div class="table-responsive">
+                    <table class="table text-center align-middle">
+                        <thead>
+                            <tr>
+                                <th class="text-start ps-3">SECTOR CATEGORY</th>
+                                <th>24H TOTAL VOLUME</th>
+                                <th>AVG 24H CHANGE</th>
+                                <th>TOP GAINER IN SECTOR</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for sec in sectors %}
+                            <tr>
+                                <td class="text-start ps-3"><strong>{{ sec.name }}</strong></td>
+                                <td class="fw-bold text-white">{{ sec.vol_formatted }}</td>
+                                <td class="{{ 'text-green' if sec.avg_change >= 0 else 'text-red' }} fw-bold">
+                                    {{ '+' if sec.avg_change >= 0 else '' }}{{ "%.2f"|format(sec.avg_change) }}%
+                                </td>
+                                <td class="text-warning fw-bold">{{ sec.top_gainer }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 2: TREND SCANNER FOR ALL PAIRS -->
+        <div>
+            <div class="section-title">🔍 FULL MARKET TREND SCANNER</div>
+            <div class="table-custom shadow-lg">
+                <div class="table-responsive">
+                    <table class="table text-center align-middle">
+                        <thead>
+                            <tr>
+                                <th class="text-start ps-3">PAIR</th>
+                                <th>PRICE</th>
+                                <th>24H %</th>
+                                <th>15M</th>
+                                <th>1H</th>
+                                <th>4H</th>
+                                <th>DMI</th>
+                                <th>RSI>EMA</th>
+                                <th>OBV>EMA50</th>
+                                <th>OI Δ (1H)</th>
+                                <th>BULL</th>
+                                <th>BEAR</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in results %}
+                            <tr>
+                                <td class="text-start ps-3"><strong>{{ item.symbol }}</strong></td>
+                                <td>${{ item.price }}</td>
+                                <td class="{{ 'text-green' if item.price_change >= 0 else 'text-red' }}">
+                                    {{ '+' if item.price_change >= 0 else '' }}{{ "%.2f"|format(item.price_change) }}%
+                                </td>
+                                <td><span class="tf-{{ item.tf_15m }}">{{ item.tf_15m }}</span></td>
+                                <td><span class="tf-{{ item.tf_1h }}">{{ item.tf_1h }}</span></td>
+                                <td><span class="tf-{{ item.tf_4h }}">{{ item.tf_4h }}</span></td>
+                                <td><span class="badge {{ 'badge-yes' if item.dmi == 'YES' else ('badge-no' if item.dmi == 'NO' else 'badge-flat') }}">{{ item.dmi }}</span></td>
+                                <td><span class="badge {{ 'badge-yes' if item.rsi_ema == 'YES' else 'badge-no' }}">{{ item.rsi_ema }}</span></td>
+                                <td><span class="badge {{ 'badge-yes' if item.obv == 'YES' else 'badge-no' }}">{{ item.obv }}</span></td>
+                                <td class="{{ 'text-green' if item.oi_pct_val > 0 else 'text-red' }} fw-bold">{{ item.oi_pct }}</td>
+                                <td><span class="score-box score-bull">{{ item.bull_score }}/5</span></td>
+                                <td><span class="score-box score-bear">{{ item.bear_score }}/5</span></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>
+"""
+
 @app.route('/')
 def home():
-    return "🤖 Pure WebSocket 5-Strategy Multi-Bot is running successfully!"
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-FUTURES_BASE = "https://testnet.binancefuture.com"
-FUTURES_API_KEY = os.environ.get("FUTURES_API_KEY", "TGSwnTW3ukJ7z8fXKeZd4Iz6MBttW6bRA2ODX5rwXC90YWsv5srgcwcL7Bl8XQeA").strip()
-FUTURES_SECRET_KEY = os.environ.get("FUTURES_SECRET_KEY", "b64gEodONh8DMFPsX7Kaj1QRhGdgRM8iCYy8gVPVAO8VNAzWL88DmvZhrVE330Ed").strip()
-
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8652275832:AAGxdVX66q7tQP_v3kNVAyslSYD3FsAWz60").strip()
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6127362073").strip()
-
-client = Client(FUTURES_API_KEY, FUTURES_SECRET_KEY, testnet=True)
-client.API_URL = f"{FUTURES_BASE}/fapi"
-
-COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "LINKUSDT"]
-
-LEVERAGE = 5
-TOTAL_MARGIN = 30.0  
-DAILY_PROFIT_LIMIT = 5.0    
-DAILY_LOSS_LIMIT = -2.0     
-MAX_ACTIVE_TRADES = 3      
-
-symbol_info_cache = {}
-active_trades = {}  
-latest_prices = {}
-price_history = {coin: [] for coin in COINS}
-last_checked_candle_time = {}
-
-DATA_FILE = "advanced_5_strategy_data.json"
-api_lock = Lock()
-
-def load_data():
-    default_strategies = {
-        "50EMA_RSI_Pullback": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
-        "20EMA_StochRSI": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
-        "BB_Middle_Pullback": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
-        "MACD_Zero_EMA10": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0},
-        "SuperTrend_EMA10": {"signals": 0, "win": 0, "loss": 0, "pnl": 0.0}
-    }
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r") as f:
-                data = json.load(f)
-                if "strategies" not in data:
-                    data["strategies"] = default_strategies
-                else:
-                    for s_key in default_strategies:
-                        if s_key not in data["strategies"]:
-                            data["strategies"][s_key] = default_strategies[s_key]
-                return data
-        except:
-            pass
-    return {
-        "date": str(datetime.date.today()), 
-        "daily_pnl": 0.0, 
-        "strategies": default_strategies,
-        "history": []
-    }
-
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
-
-def check_daily_limit():
-    data = load_data()
-    today_str = str(datetime.date.today())
-    if data.get("date") != today_str:
-        data["date"] = today_str
-        data["daily_pnl"] = 0.0
-        save_data(data)
-        return False, 0.0
+    tickers_dict = get_all_futures_tickers()
+    sectors_data = calculate_sector_flow(tickers_dict)
     
-    pnl = data.get("daily_pnl", 0.0)
-    if pnl >= DAILY_PROFIT_LIMIT or pnl <= DAILY_LOSS_LIMIT:
-        return True, pnl
-    return False, pnl
-
-def update_daily_pnl(amount, strat_name=None, is_win=None):
-    data = load_data()
-    today_str = str(datetime.date.today())
-    if data.get("date") != today_str:
-        data["date"] = today_str
-        data["daily_pnl"] = 0.0
+    # 🟢 Binance Futures USDT Pairs အားလုံးကို ဆွဲယူခြင်း (Limit ဖျက်ထားသည်)
+    all_tickers = list(tickers_dict.values())
     
-    data["daily_pnl"] = data.get("daily_pnl", 0.0) + amount
-    
-    if strat_name and strat_name in data["strategies"]:
-        if is_win is not None:
-            if is_win:
-                data["strategies"][strat_name]["win"] += 1
-            else:
-                data["strategies"][strat_name]["loss"] += 1
-        data["strategies"][strat_name]["pnl"] += amount
-        
-    data["history"].append({"timestamp": str(datetime.datetime.now()), "pnl": amount})
-    save_data(data)
-
-def record_signal(strat_name):
-    data = load_data()
-    if strat_name in data["strategies"]:
-        data["strategies"][strat_name]["signals"] += 1
-        save_data(data)
-
-def send_telegram(message):
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-            requests.post(url, json=payload, timeout=5)
-        except Exception as e:
-            print(f"Telegram Error: {e}")
-
-def get_symbol_filter(symbol, filter_type):
-    if symbol not in symbol_info_cache:
-        try:
-            with api_lock:
-                info = client.futures_exchange_info()
-            for s in info['symbols']:
-                symbol_info_cache[s['symbol']] = s
-        except Exception: return None
-    info = symbol_info_cache.get(symbol)
-    if info:
-        for f in info['filters']:
-            if f['filterType'] == filter_type: return f
-    return None
-
-def format_price(symbol, price):
-    pf = get_symbol_filter(symbol, 'PRICE_FILTER')
-    if not pf: return round(price, 2)
-    tick = float(pf['tickSize'])
-    return round(round(price / tick) * tick, int(round(-math.log10(tick))))
-
-def format_quantity(symbol, qty):
-    lf = get_symbol_filter(symbol, 'LOT_SIZE')
-    if not lf: return round(qty, 3)
-    step = float(lf['stepSize'])
-    return round(round(qty / step) * step, int(round(-math.log10(step))))
-
-def close_all_positions(reason="Limit Hit"):
-    try:
-        with api_lock:
-            for symbol in COINS:
-                pos_info = client.futures_position_information(symbol=symbol)
-                for pos in pos_info:
-                    amt = float(pos['positionAmt'])
-                    if amt != 0:
-                        side = 'SELL' if amt > 0 else 'BUY'
-                        client.futures_create_order(symbol=symbol, side=side, type='MARKET', quantity=abs(amt))
-                        send_telegram(f"⚠️ *{symbol}* active position ကို အလိုအလျောက် ပိတ်လိုက်ပါပြီ။ အကြောင်းရင်း: *{reason}*")
-                client.futures_cancel_all_open_orders(symbol=symbol)
-    except Exception as e:
-        print(f"Error during emergency close: {e}")
-
-# STRATEGY FUNCTIONS
-def strategy_50ema_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
-    rsi_curr = df['RSI'].iloc[-2]
-    ema200_val = df['EMA200'].iloc[-2]
-    ema50_val = df['EMA50'].iloc[-2]
-
-    if (c_close > ema200_val) and (c_low <= ema50_val or c_close <= ema50_val) and (35 <= rsi_curr <= 45) and is_green_reversal:
-        return "LONG", recent_low, df['EMA10'].iloc[-2], "50EMA_RSI_Pullback"
-    if (c_close < ema200_val) and (c_high >= ema50_val or c_close >= ema50_val) and (55 <= rsi_curr <= 65) and is_red_reversal:
-        return "SHORT", recent_high, df['EMA10'].iloc[-2], "50EMA_RSI_Pullback"
-    return None, 0, 0, ""
-
-def strategy_20ema_stoch_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
-    stoch_k = df['StochRSI_K'].iloc[-2]
-    stoch_d = df['StochRSI_D'].iloc[-2]
-    prev_stoch_k = df['StochRSI_K'].iloc[-3]
-    prev_stoch_d = df['StochRSI_D'].iloc[-3]
-    ema200_val = df['EMA200'].iloc[-2]
-    ema20_val = df['EMA20'].iloc[-2]
-
-    if (c_close > ema200_val) and (c_low <= ema20_val or c_close <= ema20_val):
-        if (prev_stoch_k < prev_stoch_d) and (stoch_k > stoch_d) and stoch_k < 20 and is_green_reversal:
-            return "LONG", recent_low, df['EMA10'].iloc[-2], "20EMA_StochRSI"
-    if (c_close < ema200_val) and (c_high >= ema20_val or c_close >= ema20_val):
-        if (prev_stoch_k > prev_stoch_d) and (stoch_k < stoch_d) and stoch_k > 80 and is_red_reversal:
-            return "SHORT", recent_high, df['EMA10'].iloc[-2], "20EMA_StochRSI"
-    return None, 0, 0, ""
-
-def strategy_bb_middle_pullback(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
-    rsi_curr = df['RSI'].iloc[-2]
-    bb_middle = df['BB_middle'].iloc[-2]
-    ema200_val = df['EMA200'].iloc[-2]
-
-    if (c_close > ema200_val) and (c_low <= bb_middle or c_close <= bb_middle) and (rsi_curr <= 40) and is_green_reversal:
-        return "LONG", recent_low, df['EMA10'].iloc[-2], "BB_Middle_Pullback"
-    if (c_close < ema200_val) and (c_high >= bb_middle or c_close >= bb_middle) and (rsi_curr >= 60) and is_red_reversal:
-        return "SHORT", recent_high, df['EMA10'].iloc[-2], "BB_Middle_Pullback"
-    return None, 0, 0, ""
-
-def strategy_macd_zeroline_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
-    macd_curr = df['MACD'].iloc[-2]
-    rsi_curr = df['RSI'].iloc[-2]
-    ema10_val = df['EMA10'].iloc[-2]
-
-    if (macd_curr > 0) and (c_low <= ema10_val or c_close <= ema10_val) and (35 <= rsi_curr <= 45) and is_green_reversal:
-        return "LONG", recent_low, ema10_val, "MACD_Zero_EMA10"
-    if (macd_curr < 0) and (c_high >= ema10_val or c_close >= ema10_val) and (55 <= rsi_curr <= 65) and is_red_reversal:
-        return "SHORT", recent_high, ema10_val, "MACD_Zero_EMA10"
-    return None, 0, 0, ""
-
-def strategy_supertrend_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high):
-    rsi_curr = df['RSI'].iloc[-2]
-    ema10_val = df['EMA10'].iloc[-2]
-    st_direction = df['ST_direction'].iloc[-2]
-
-    if (st_direction == 1) and (c_low <= ema10_val or c_close <= ema10_val) and (30 <= rsi_curr <= 40) and is_green_reversal:
-        return "LONG", recent_low, ema10_val, "SuperTrend_EMA10"
-    if (st_direction == -1) and (c_high >= ema10_val or c_close >= ema10_val) and (60 <= rsi_curr <= 70) and is_red_reversal:
-        return "SHORT", recent_high, ema10_val, "SuperTrend_EMA10"
-    return None, 0, 0, ""
-
-def check_all_strategies_signal(symbol):
-    try:
-        prices = price_history.get(symbol, [])
-        if len(prices) < 210: 
-            return None, 0, 0, ""
-        
-        df = pd.DataFrame({'close': prices})
-        df['open'] = df['close'].shift(1).fillna(df['close'])
-        df['high'] = df['close'] * 1.001
-        df['low'] = df['close'] * 0.999
-        df['volume'] = 1000.0
-        
-        df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
-        df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
-        df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
-        df['EMA10'] = df['close'].ewm(span=10, adjust=False).mean()
-        
-        df['BB_middle'] = df['close'].rolling(window=20).mean()
-        df['BB_std'] = df['close'].rolling(window=20).std()
-        df['BB_upper'] = df['BB_middle'] + (2 * df['BB_std'])
-        df['BB_lower'] = df['BB_middle'] - (2 * df['BB_std'])
-        
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).ewm(com=13, adjust=False).mean()
-        loss = (-delta.where(delta < 0, 0)).ewm(com=13, adjust=False).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
-        
-        df['RSI_min'] = df['RSI'].rolling(window=14).min()
-        df['RSI_max'] = df['RSI'].rolling(window=14).max()
-        df['StochRSI'] = (df['RSI'] - df['RSI_min']) / (df['RSI_max'] - df['RSI_min'] + 1e-10)
-        df['StochRSI_K'] = df['StochRSI'].rolling(window=3).mean() * 100
-        df['StochRSI_D'] = df['StochRSI_K'].rolling(window=3).mean()
-
-        exp1 = df['close'].ewm(span=12, adjust=False).mean()
-        exp2 = df['close'].ewm(span=26, adjust=False).mean()
-        df['MACD'] = exp1 - exp2
-        
-        high_low = df['high'] - df['low']
-        high_cp = (df['high'] - df['close'].shift()).abs()
-        low_cp = (df['low'] - df['close'].shift()).abs()
-        df['TR'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-        df['ATR'] = df['TR'].rolling(window=10).mean()
-        
-        df['ST_mid'] = (df['high'] + df['low']) / 2
-        df['ST_upper'] = df['ST_mid'] + (3 * df['ATR'])
-        df['ST_lower'] = df['ST_mid'] - (3 * df['ATR'])
-        
-        st_dir = []
-        current_dir = 1
-        for i in range(len(df)):
-            if i < 10:
-                st_dir.append(1)
-                continue
-            if df['close'].iloc[i] > df['ST_upper'].iloc[i-1]:
-                current_dir = 1
-            elif df['close'].iloc[i] < df['ST_lower'].iloc[i-1]:
-                current_dir = -1
-            st_dir.append(current_dir)
-        df['ST_direction'] = st_dir
-
-        c_close, c_open = df['close'].iloc[-2], df['open'].iloc[-2]
-        c_high, c_low = df['high'].iloc[-2], df['low'].iloc[-2]
-        p_close, p_open = df['close'].iloc[-3], df['open'].iloc[-3]
-        
-        is_green_reversal = (p_close < p_open) and (c_close > c_open)
-        is_red_reversal = (p_close > p_open) and (c_close < c_open)
-        
-        recent_low = df['low'].iloc[-10:-1].min()
-        recent_high = df['high'].iloc[-10:-1].max()
-
-        side, sl, ema10, strat = strategy_50ema_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
-        if side: return side, sl, ema10, strat
-        
-        side, sl, ema10, strat = strategy_20ema_stoch_rsi(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
-        if side: return side, sl, ema10, strat
-        
-        side, sl, ema10, strat = strategy_bb_middle_pullback(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
-        if side: return side, sl, ema10, strat
-        
-        side, sl, ema10, strat = strategy_macd_zeroline_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
-        if side: return side, sl, ema10, strat
-        
-        side, sl, ema10, strat = strategy_supertrend_ema10(df, c_close, c_low, c_high, is_green_reversal, is_red_reversal, recent_low, recent_high)
-        if side: return side, sl, ema10, strat
-
-        return None, 0, 0, ""
-    except Exception as e:
-        print(f"Strategy Error for [{symbol}]: {e}")
-        return None, 0, 0, ""
-
-def monitor_trade_execution(symbol, side, exec_price, tp1_price, stop_loss_price, total_qty, strat_name):
-    tp_side = 'SELL' if side == 'LONG' else 'BUY'
-    half_qty = format_quantity(symbol, total_qty / 2)
-    tp1_hit = False
-    
-    try:
-        with api_lock:
-            tp1_order = client.futures_create_order(
-                symbol=symbol, side=tp_side, type='LIMIT', timeInForce='GTC',
-                quantity=half_qty, price=str(tp1_price), recvWindow=60000
-            )
-        tp1_order_id = tp1_order['orderId']
-    except Exception as e:
-        print(f"⚠️ Limit TP1 Order Error: {e}")
-        active_trades[symbol] = False
-        return
-
-    while True:
-        try:
-            is_stopped, current_pnl = check_daily_limit()
-            if is_stopped:
-                close_all_positions("Daily PnL Boundary Crossed inside Monitor")
-                break
-
-            curr_price = latest_prices.get(symbol, exec_price)
+    # ⚡ Multithreading (ThreadPoolExecutor) သုံး၍ အပြိုင်စစ်ဆေးခြင်းဖြင့် မြန်ဆန်စေခြင်း
+    results = []
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        scanned_data = list(executor.map(process_symbol_data, all_tickers))
+        results = [d for d in scanned_data if d is not None]
             
-            prices = price_history.get(symbol, [])
-            if len(prices) > 20:
-                df_check = pd.DataFrame({'close': prices})
-                delta = df_check['close'].diff()
-                gain = (delta.where(delta > 0, 0)).ewm(com=13, adjust=False).mean()
-                loss = (-delta.where(delta < 0, 0)).ewm(com=13, adjust=False).mean()
-                df_check['RSI'] = 100 - (100 / (1 + (gain / loss)))
-                last_rsi = df_check['RSI'].iloc[-2]
-                last_candle_close = df_check['close'].iloc[-2]
-                ema10_curr = df_check['close'].ewm(span=10, adjust=False).mean().iloc[-2]
-            else:
-                last_rsi = 50
-                last_candle_close = curr_price
-                ema10_curr = curr_price
-
-            if side == "LONG":
-                if curr_price <= stop_loss_price:
-                    with api_lock:
-                        client.futures_cancel_all_open_orders(symbol=symbol)
-                    loss_amount = (stop_loss_price - exec_price) * total_qty
-                    update_daily_pnl(loss_amount, strat_name, is_win=False)
-                    send_telegram(f"🛑 *{symbol} LONG SL Hit!* [{strat_name}] Price: `{curr_price}` | Loss: `{round(loss_amount, 2)} USDT`")
-                    break
-                
-                if not tp1_hit:
-                    with api_lock:
-                        order_status = client.futures_get_order(symbol=symbol, orderId=tp1_order_id)
-                    if order_status['status'] == 'FILLED':
-                        tp1_hit = True
-                        stop_loss_price = exec_price  
-                        profit_tp1 = (tp1_price - exec_price) * half_qty
-                        update_daily_pnl(profit_tp1)
-                        send_telegram(f"🎯 *{symbol} LONG TP1 Hit!* [{strat_name}] SL moved to Break-even `{exec_price}`")
-                else:
-                    if last_rsi >= 70 or last_candle_close < ema10_curr or curr_price <= exec_price:
-                        with api_lock:
-                            client.futures_create_order(symbol=symbol, side=tp_side, type='MARKET', quantity=half_qty)
-                        profit_tp2 = (curr_price - exec_price) * half_qty
-                        update_daily_pnl(profit_tp2, strat_name, is_win=True)
-                        send_telegram(f"🏁 *{symbol} LONG Exit Hit!* [{strat_name}] Closed remaining half.")
-                        break
-
-            elif side == "SHORT":
-                if curr_price >= stop_loss_price:
-                    with api_lock:
-                        client.futures_cancel_all_open_orders(symbol=symbol)
-                    loss_amount = (stop_loss_price - exec_price) * total_qty
-                    update_daily_pnl(loss_amount, strat_name, is_win=False)
-                    send_telegram(f"🛑 *{symbol} SHORT SL Hit!* [{strat_name}] Price: `{curr_price}` | Loss: `{round(loss_amount, 2)} USDT`")
-                    break
-                
-                if not tp1_hit:
-                    with api_lock:
-                        order_status = client.futures_get_order(symbol=symbol, orderId=tp1_order_id)
-                    if order_status['status'] == 'FILLED':
-                        tp1_hit = True
-                        stop_loss_price = exec_price  
-                        profit_tp1 = (exec_price - tp1_price) * half_qty
-                        update_daily_pnl(profit_tp1)
-                        send_telegram(f"🎯 *{symbol} SHORT TP1 Hit!* [{strat_name}] SL moved to Break-even `{exec_price}`")
-                else:
-                    if last_rsi <= 30 or last_candle_close > ema10_curr or curr_price >= exec_price:
-                        with api_lock:
-                            client.futures_create_order(symbol=symbol, side=tp_side, type='MARKET', quantity=half_qty)
-                        profit_tp2 = (exec_price - curr_price) * half_qty
-                        update_daily_pnl(profit_tp2, strat_name, is_win=True)
-                        send_telegram(f"🏁 *{symbol} SHORT Exit Hit!* [{strat_name}] Closed remaining half.")
-                        break
-
-            time.sleep(10)
-        except Exception as e:
-            print(f"Monitoring Error on {symbol}: {e}")
-            time.sleep(10)
-            
-    try:
-        with api_lock:
-            client.futures_cancel_all_open_orders(symbol=symbol)
-            pos_info = client.futures_position_information(symbol=symbol)
-            for pos in pos_info:
-                if float(pos['positionAmt']) != 0:
-                    close_side = 'SELL' if float(pos['positionAmt']) > 0 else 'BUY'
-                    client.futures_create_order(symbol=symbol, side=close_side, type='MARKET', quantity=abs(float(pos['positionAmt'])))
-    except Exception as e:
-        print(f"Cleanup error for {symbol}: {e}")
-        
-    active_trades[symbol] = False
-
-def market_scanner_loop():
-    print("🔄 Pure WebSocket Market Scanner active...")
-    time.sleep(10) # Wait for websocket to gather initial prices
+    # Bull Score အမြင့်ဆုံးမှ အနိမ့်ဆုံးသို့ စီစဉ်ခြင်း
+    results = sorted(results, key=lambda x: x['bull_score'], reverse=True)
     
-    while True:
-        try:
-            is_stopped, current_pnl = check_daily_limit()
-            if is_stopped:
-                time.sleep(60)
-                continue
-
-            active_count = sum(1 for s in COINS if active_trades.get(s, False))
-            if active_count >= MAX_ACTIVE_TRADES:
-                time.sleep(15)
-                continue
-
-            for symbol in COINS:
-                if active_trades.get(symbol, False):
-                    continue
-
-                side, swing_val, ema10_val, strat_name = check_all_strategies_signal(symbol)
-                if side:
-                    record_signal(strat_name) 
-                    active_trades[symbol] = True
-                    curr_price = latest_prices.get(symbol, 0.0)
-                    
-                    notional_size = TOTAL_MARGIN * LEVERAGE
-                    total_qty = format_quantity(symbol, notional_size / curr_price)
-                    
-                    order_side = 'BUY' if side == 'LONG' else 'SELL'
-                    with api_lock:
-                        order = client.futures_create_order(symbol=symbol, side=order_side, type='MARKET', quantity=total_qty, recvWindow=60000)
-                    exec_price = float(order.get('avgPrice', curr_price))
-                    
-                    if side == 'LONG':
-                        stop_loss_price = format_price(symbol, min(exec_price * 0.98, swing_val * 0.998))
-                        sl_distance = exec_price - stop_loss_price
-                        tp1_price = format_price(symbol, exec_price + sl_distance)
-                    else:
-                        stop_loss_price = format_price(symbol, max(exec_price * 1.02, swing_val * 1.002))
-                        sl_distance = stop_loss_price - exec_price
-                        tp1_price = format_price(symbol, exec_price - sl_distance)
-                    
-                    send_telegram(
-                        f"🚀 *5-STRATEGY SIGNAL MATCHED [{strat_name}]*\n"
-                        f"Pair: `{symbol}` | Side: `{side}` | Entry: `{exec_price}`\n"
-                        f"TP1 (1:1): `{tp1_price}` | SL: `{stop_loss_price}`"
-                    )
-                    
-                    t = Thread(target=monitor_trade_execution, args=(symbol, side, exec_price, tp1_price, stop_loss_price, total_qty, strat_name))
-                    t.daemon = True
-                    t.start()
-                
-                time.sleep(2)
-        except Exception as e:
-            print(f"Error in scanner loop: {e}")
-        
-        time.sleep(10)
-
-def handle_socket_message(msg):
-    if msg.get('e') == 'bookTicker':
-        symbol = msg.get('s')
-        best_price = float(msg.get('b', 0))
-        if symbol in COINS and best_price > 0:
-            latest_prices[symbol] = best_price
-            if len(price_history[symbol]) == 0 or price_history[symbol][-1] != best_price:
-                price_history[symbol].append(best_price)
-                if len(price_history[symbol]) > 300:
-                    price_history[symbol].pop(0)
-
-def start_websocket():
-    from binance import ThreadedWebsocketManager
-    twm = ThreadedWebsocketManager(api_key=FUTURES_API_KEY, api_secret=FUTURES_SECRET_KEY, testnet=True)
-    twm.start()
+    stats = {
+        'total': len(results),
+        'bullish': sum(1 for r in results if r['bull_score'] >= 4),
+        'bearish': sum(1 for r in results if r['bear_score'] >= 4),
+        'oi_rising': sum(1 for r in results if r['oi_rising'] == 'YES')
+    }
     
-    for symbol in COINS:
-        twm.start_symbol_book_ticker_socket(callback=handle_socket_message, symbol=symbol)
-    print("📡 Binance Futures WebSocket Stream Connected (No REST API calls).")
+    return render_template_string(HTML_TEMPLATE, results=results, sectors=sectors_data, stats=stats)
 
-def run_concurrent_bots():
-    msg = f"🚀 *Pure WebSocket 5-Strategy Bot Running* (IP Ban Protected)"
-    print(msg)
-    send_telegram(msg)
-    
-    start_websocket()
-    
-    scanner_thread = Thread(target=market_scanner_loop)
-    scanner_thread.daemon = True
-    scanner_thread.start()
-    scanner_thread.join()
-
-if __name__ == "__main__":
-    bot_thread = Thread(target=run_concurrent_bots)
-    bot_thread.daemon = True
-    bot_thread.start()
-    run_web()
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=False)
